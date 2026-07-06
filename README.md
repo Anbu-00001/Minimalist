@@ -1,0 +1,3 @@
+# Minimalist
+
+A minimalist project.
