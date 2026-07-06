@@ -1,0 +1,30 @@
+# environments & secrets
+.venv/
+.env
+.env.*
+
+# python artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# model weights (huge — never commit; the Docker build pulls them separately)
+models/
+*.gguf
+*.safetensors
+
+# derived / runtime artifacts (regenerate with eval/parse_batches.py etc.)
+data/dev_tasks/merged.json
+output/
+results/
+*.log
+eval/results_*.json
+eval/.remote_kernel_id
+
+# scratch / build artifacts (rebuilt on demand, not shippable source)
+amda_gpu_kit.tar.gz
+tools/
+
+# large reference doc, kept locally only
+Participant Guide_ AMD Developer Hackathon (ACT II).pdf
