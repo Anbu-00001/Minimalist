@@ -20,6 +20,12 @@ from collections import Counter, defaultdict
 
 from json_repair import repair_json
 
+try:  # optional: the sympy-based checker lighteval/lm-eval-harness use for math
+    from math_verify import parse as _mv_parse, verify as _mv_verify
+    HAVE_MATH_VERIFY = True
+except ImportError:
+    HAVE_MATH_VERIFY = False
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SENTIMENT_LABELS = ("positive", "negative", "neutral", "mixed")
 STOPWORDS = set("the a an and or of to in on for by with is are was were be been has have had "
@@ -147,6 +153,12 @@ def _format_violation(prompt: str, answer: str) -> str | None:
 # ---------- per-category judges ----------
 
 def _judge_math(t: dict) -> tuple[str, str]:
+    if HAVE_MATH_VERIFY:
+        try:  # exact/symbolic equivalence first (order matters: gold, answer)
+            if _mv_verify(_mv_parse(t["gold_answer"]), _mv_parse(t["answer"])):
+                return "pass", "math-verify equivalence"
+        except Exception:
+            pass  # fall through to tolerance-based comparison
     gold_nums = _numbers(t["gold_answer"])
     if not gold_nums:
         return "unsure", "no number in gold"

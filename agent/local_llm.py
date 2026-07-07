@@ -35,19 +35,24 @@ def _get_client() -> OpenAI:
 
 
 def complete(prompt: str, max_tokens: int = 768, system: str | None = None,
-             temperature: float = 0.0) -> str | None:
+             temperature: float = 0.0, grammar: str | None = None) -> str | None:
+    """`grammar` is a llama.cpp GBNF string, passed via the server's
+    per-request `grammar` field (tools/server/README.md). Ignored by
+    non-llama backends, which merely won't constrain."""
     if not available():
         return None
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
+    extra = {"grammar": grammar} if grammar else {}
     try:
         resp = _get_client().chat.completions.create(
             model=config.LOCAL_MODEL_NAME,
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
+            extra_body=extra,
         )
     except Exception:
         return None

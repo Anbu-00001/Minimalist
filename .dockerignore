@@ -4,7 +4,14 @@
 .env.*
 data/
 eval/
+submission/
 *.md
 *.pdf
+*.tar.gz
 __pycache__
 *.pyc
+tools/llama-b9888/llama-bench
+tools/llama-b9888/llama-perplexity
+tools/llama-b9888/llama-imatrix
+tools/llama-b9888/llama-quantize
+tools/llama-b9888/llama-tts

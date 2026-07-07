@@ -41,6 +41,60 @@ def _run_python(code: str, timeout: float = 5.0) -> bool:
         return False
 
 
+# ---------- program-aided math verification (VERDICTS V6) ----------
+
+_NUM_RE = r"-?\$?\d[\d,]*\.?\d*"
+# a safe arithmetic expression: digits/operators plus a small function whitelist
+_EXPR_OK = re.compile(r"^(?:\d|[\s+\-*/().,eE_]|\*\*|round|abs|min|max|sum|pow)+$")
+
+
+def extract_final_number(text: str) -> float | None:
+    """The number an answer commits to: an ANSWER: line wins, else the last
+    number in the last digit-bearing lines."""
+    def nums(s: str) -> list[float]:
+        out = []
+        for m in re.findall(_NUM_RE, s):
+            try:
+                out.append(float(m.replace("$", "").replace(",", "")))
+            except ValueError:
+                pass
+        return out
+
+    m = re.search(r"ANSWER\s*[:=]\s*(.+)", text, re.IGNORECASE)
+    if m and nums(m.group(1)):
+        return nums(m.group(1))[-1]
+    for line in reversed([l for l in text.splitlines() if re.search(r"\d", l)][-3:]):
+        if nums(line):
+            return nums(line)[-1]
+    return None
+
+
+def extract_expression(text: str) -> str | None:
+    """Pull a bare arithmetic expression from a model reply (fences stripped),
+    rejecting anything outside the arithmetic whitelist."""
+    body = re.sub(r"```(?:python|py)?|```", "", text).strip()
+    for line in reversed([l.strip() for l in body.splitlines() if l.strip()]):
+        line = line.rstrip(".;")
+        if re.search(r"\d", line) and _EXPR_OK.match(line):
+            return line
+    return None
+
+
+def run_expression(expr: str, timeout: float = 5.0) -> float | None:
+    """Evaluate an arithmetic expression in a subprocess; None on any failure."""
+    try:
+        r = subprocess.run([sys.executable, "-c", f"print(({expr}))"],
+                           capture_output=True, text=True, timeout=timeout)
+        return float(r.stdout.strip()) if r.returncode == 0 else None
+    except Exception:
+        return None
+
+
+def numbers_agree(a: float, b: float) -> bool:
+    """Tolerates rounding drift only: |diff| within 2 cents or 0.5% relative."""
+    return abs(a - b) <= max(0.02, abs(b) * 0.005)
+
+
 def _word_limit_from_prompt(prompt: str) -> int | None:
     m = re.search(r"(?:in |under |at most |no more than |maximum of )(\d+) words", prompt.lower())
     return int(m.group(1)) if m else None

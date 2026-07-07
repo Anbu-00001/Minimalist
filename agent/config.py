@@ -6,17 +6,34 @@ FIREWORKS_API_KEY = os.environ.get("FIREWORKS_API_KEY", "")
 FIREWORKS_BASE_URL = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai/inference/v1")
 ALLOWED_MODELS = [m.strip() for m in os.environ.get("ALLOWED_MODELS", "").split(",") if m.strip()]
 
-# Escalation preference. Non-reasoning models first: a reasoning model's thinking
-# trace bills as output tokens, which is what we're ranked on. Code specialist
-# is preferred for the two code categories (see router.pick_model).
+# Escalation preference (research/VERDICTS.md V1). Gemma-first: thinking is
+# off by default on Gemma-4 (HF card), it has the best measured verbosity
+# profile of the five, and Gemma usage qualifies for a Track 1 side prize.
+# kimi-k2p7-code goes LAST despite being the code specialist — its thinking
+# mode is architecturally mandatory and bills as output tokens on every call.
+# minimax-m3 stays below the Gemmas until `thinking: disabled` is proven to
+# strip reasoning through the judging proxy (test on key day-1).
 REMOTE_PREFERENCE = [
     "gemma-4-31b-it",
     "gemma-4-31b-it-nvfp4",
     "gemma-4-26b-a4b-it",
-    "kimi-k2p7-code",
     "minimax-m3",
+    "kimi-k2p7-code",
 ]
-CODE_PREFERENCE = ["kimi-k2p7-code"] + REMOTE_PREFERENCE
+CODE_PREFERENCE = REMOTE_PREFERENCE  # mandatory thinking outweighs code specialty
+
+# Hard output caps for remote calls — every output token costs leaderboard
+# rank, and Gemma-4's default prior is verbose (VERDICTS V3).
+REMOTE_MAX_TOKENS = {
+    "sentiment_classification": 48,
+    "named_entity_recognition": 256,
+    "factual_knowledge": 160,
+    "text_summarisation": 256,
+    "logical_reasoning": 192,
+    "mathematical_reasoning": 320,
+    "code_debugging": 640,
+    "code_generation": 640,
+}
 
 # Local llama.cpp server (OpenAI-compatible). Started by the container entrypoint;
 # if it isn't up, the router simply escalates everything.
