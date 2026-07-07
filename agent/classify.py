@@ -5,7 +5,7 @@ import re
 _RULES: list[tuple[str, list[str]]] = [
     ("code_debugging", ["bug", "debug", "fix the", "error in", "incorrect code", "faulty"]),
     ("code_generation", ["write a function", "implement", "def ", "function that", "return a function", "signature"]),
-    ("named_entity_recognition", ["entities", "entity", "person, org", "label the", "extract and label", "ner"]),
+    ("named_entity_recognition", ["entities", "entity", "person, org", "label the", "extract and label"]),
     ("sentiment_classification", ["sentiment", "positive", "negative", "neutral", "tone of the review"]),
     ("text_summarisation", ["summarise", "summarize", "summary", "condense", "in one sentence", "tl;dr"]),
     ("mathematical_reasoning", ["calculate", "how many", "how much", "percent", "%", "total cost", "compute the"]),

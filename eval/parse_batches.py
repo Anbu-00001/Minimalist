@@ -92,7 +92,7 @@ def normalise(task: dict, source: str) -> dict | None:
 
 
 def main() -> None:
-    merged, seen_prompts = [], set()
+    merged, seen_prompts, id_counts = [], set(), Counter()
     for path in sorted(glob.glob(f"{ROOT}/data/dev_tasks/*/batch*.md")):
         source = os.path.basename(os.path.dirname(path))
         raw = open(path, encoding="utf-8", errors="replace").read()
@@ -110,6 +110,15 @@ def main() -> None:
                 dupes += 1
                 continue
             seen_prompts.add(key)
+            # separate batches of the same source restart their own numbering
+            # (batch1/batch2/batch3 each begin at _1), so a namespaced task_id
+            # can collide even though the prompt is genuinely different —
+            # disambiguate rather than let a dict keyed by task_id silently
+            # pick one and drop the other downstream (eval/judge.py:309)
+            base_id = norm["task_id"]
+            id_counts[base_id] += 1
+            if id_counts[base_id] > 1:
+                norm["task_id"] = f"{base_id}_dup{id_counts[base_id]}"
             merged.append(norm)
             kept += 1
         print(f"{os.path.relpath(path, ROOT)}: extracted {len(tasks)}, "
