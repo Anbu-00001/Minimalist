@@ -162,7 +162,13 @@ def solve(task: dict, deadline: float) -> dict:
         grammar = (grammars.JSON_GBNF
                    if category == "named_entity_recognition" and "json" in prompt.lower()
                    else None)
-        answer = local_llm.complete(full_prompt, system=SYSTEM, grammar=grammar)
+        answer, confidence = local_llm.complete_scored(full_prompt, system=SYSTEM,
+                                                       grammar=grammar)
+        # a confidently-low generation isn't worth a self-consistency probe;
+        # None means "no signal", never low (VERDICTS V17)
+        low_confidence = (config.LOGPROB_ESCALATE_BELOW is not None
+                          and confidence is not None
+                          and confidence < config.LOGPROB_ESCALATE_BELOW)
         if answer:
             verdict = verify(category, prompt, answer)
             if (verdict == "pass" and category == "sentiment_classification"
@@ -184,11 +190,11 @@ def solve(task: dict, deadline: float) -> dict:
                         # the solver's unique solution beats a free-form
                         # guess at our worst category (VERDICTS V15)
                         answer, route = solver_answer, "solver"
-                    elif _self_consistent(full_prompt, answer):
+                    elif not low_confidence and _self_consistent(full_prompt, answer):
                         route = "local+consistent"
                     else:
                         answer = None
-                elif _self_consistent(full_prompt, answer):
+                elif not low_confidence and _self_consistent(full_prompt, answer):
                     route = "local+consistent"
                 else:
                     answer = None
@@ -224,7 +230,30 @@ def solve(task: dict, deadline: float) -> dict:
                 answer, route = doubted
 
     if answer is None:  # last resort: any local attempt beats an empty string
-        answer = local_llm.complete(full_prompt, system=SYSTEM) or "Unable to answer."
+        # A repeat of the identical full-length prompt just to get nothing
+        # new is exactly what timed out reasoning-heavy categories the first
+        # time (constrained-Docker test, 2026-07-08: 2 threads, 25s cap --
+        # the retry burned a second 25s for the same failure). Use the
+        # category's already-tuned cap (much smaller than the 768 default
+        # for factual/math/logic) so the retry has a real chance to finish,
+        # and skip it outright once there isn't time left to even try --
+        # a missing TOTAL_BUDGET_S deadline scores the whole run zero, which
+        # is worse than one weak answer (main.py's own design rule).
+        if deadline - time.monotonic() > config.REQUEST_TIMEOUT_S + 5:
+            if category == "mathematical_reasoning":
+                # even the 320-token cap still carries the "work step by
+                # step" hint (full_prompt), which needs more decode time
+                # than a slow 2-thread box has left to give (constrained-
+                # Docker test, 2026-07-08: 320 tokens of derivation still
+                # timed out where 160-192 token categories succeeded) --
+                # the derivation is a nicety we can't afford twice; drop it
+                # and ask for the bare number instead.
+                retry_prompt = prompt + "\n\nGive ONLY the final numeric answer. No steps, no explanation."
+                answer = local_llm.complete(retry_prompt, max_tokens=32, system=SYSTEM) or "Unable to answer."
+            else:
+                answer = local_llm.complete(full_prompt, max_tokens=cap, system=SYSTEM) or "Unable to answer."
+        else:
+            answer = "Unable to answer."
         route = route if route != "none" else "fallback"
 
     return {"task_id": task["task_id"], "answer": answer, "route": route, "category": category}

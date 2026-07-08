@@ -11,8 +11,14 @@ Slides if faster. Keep text minimal; the deck is skimmed by pre-screeners.
    in free answers**, not model capability.
 
 3. **Architecture** — the cascade diagram (classify → local → verify →
-   escalate). Emphasize verifiers as the novel piece: execution, label sets,
-   format constraints, JSON schemas — correctness checked by code, not vibes.
+   escalate → audit). Emphasize verifiers as the novel piece: code executed,
+   math re-derived by an independent program, logic puzzles solved by a CSP
+   solver (Logic-LM/SatLM pattern), labels re-read under constrained
+   grammars — correctness checked by code, not vibes. One-line credibility
+   flex: the reference eval frameworks (lighteval, lm-eval-harness) don't
+   re-derive answers; we do. Lineage citation: FrugalGPT (cascade, 98% cost
+   reduction) — and the published critique of cascades ("you pay the cheap
+   model before every escalation") is void here: our cheap model is free.
 
 4. **Token economics** — table: category × (local pass rate, escalation rate,
    expected tokens/task). ← FILL FROM BENCHMARKS. Note reasoning-model

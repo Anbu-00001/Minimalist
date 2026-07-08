@@ -57,11 +57,19 @@ bench() { # <short-name> <model-name-for-api>
 
 if command -v llama-server >/dev/null 2>&1; then
   # ---- GGUF path (matches what we'd bake into the container) ----
+  # Reframed to 2-3B per VERDICTS V20: the grading env is 4GB/2vCPU, and a
+  # constrained-Docker test (--memory=4g --cpus=2, 2026-07-08) proved the
+  # baked 4B model isn't the RAM problem (2.7GB peak, fine) but IS a speed
+  # problem — 3/8 practice tasks blew the 25s/request cap at 2 threads.
+  # 4B stays first for an apples-to-apples accuracy baseline; every URL
+  # below was verified against the live HF repo file listing, not guessed.
   GGUFS="${GGUFS:-
 https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf
-https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf
-https://huggingface.co/unsloth/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf
+https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf
 https://huggingface.co/unsloth/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf
+https://huggingface.co/unsloth/Phi-4-mini-instruct-GGUF/resolve/main/Phi-4-mini-instruct-Q4_K_M.gguf
+https://huggingface.co/unsloth/SmolLM3-3B-GGUF/resolve/main/SmolLM3-3B-Q4_K_M.gguf
+https://huggingface.co/unsloth/granite-4.1-3b-GGUF/resolve/main/granite-4.1-3b-Q4_K_M.gguf
 }"
   for url in $GGUFS; do
     f="models/$(basename "$url")"

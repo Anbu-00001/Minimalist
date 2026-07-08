@@ -1,11 +1,27 @@
 """Fireworks client. Every call goes through FIREWORKS_BASE_URL (the judging
 proxy) — bypassing it invalidates the submission. Tracks scored token usage."""
+import time
+from collections import deque
+
 from openai import OpenAI
 
 from . import config
 
 _client = None
 usage = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+_call_times: deque[float] = deque()
+
+
+def _throttle() -> None:
+    """Sliding-window wait for config.REMOTE_RPM_LIMIT (dev-only; see config.py)."""
+    if config.REMOTE_RPM_LIMIT is None:
+        return
+    now = time.monotonic()
+    while _call_times and now - _call_times[0] > 60:
+        _call_times.popleft()
+    if len(_call_times) >= config.REMOTE_RPM_LIMIT:
+        time.sleep(60 - (now - _call_times[0]) + 0.1)
+    _call_times.append(time.monotonic())
 
 
 def _get_client() -> OpenAI:
@@ -28,6 +44,7 @@ def complete(prompt: str, model: str, max_tokens: int = 512,
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
+    _throttle()
     try:
         resp = _get_client().chat.completions.create(
             model=model,

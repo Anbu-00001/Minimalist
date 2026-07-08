@@ -4,10 +4,23 @@
 # up, the agent degrades gracefully and routes everything to Fireworks.
 set -u
 
+# Thread count: nproc lies under a cgroup CPU quota (reports host cores, so
+# 12 threads would thrash a 2-vCPU grading VM). Prefer the cgroup v2 quota.
+THREADS="$(nproc)"
+if [ -r /sys/fs/cgroup/cpu.max ]; then
+    read -r QUOTA PERIOD < /sys/fs/cgroup/cpu.max
+    if [ "$QUOTA" != "max" ] && [ "$PERIOD" -gt 0 ] 2>/dev/null; then
+        CG=$(( (QUOTA + PERIOD - 1) / PERIOD ))
+        [ "$CG" -ge 1 ] && [ "$CG" -lt "$THREADS" ] && THREADS="$CG"
+    fi
+fi
+echo "entrypoint: using $THREADS threads" >&2
+
 MODEL="$(ls /models/*.gguf 2>/dev/null | head -1)"
 if [ -n "${MODEL:-}" ]; then
+    # -c 2048 halves KV-cache memory vs 4096 — the grading VM has 4 GB total
     LD_LIBRARY_PATH=/opt/llama /opt/llama/llama-server \
-        -m "$MODEL" -c 4096 -t "$(nproc)" --port 8080 --jinja \
+        -m "$MODEL" -c 2048 -t "$THREADS" --port 8080 --jinja \
         > /tmp/llama-server.log 2>&1 &
     LLAMA_PID=$!
 

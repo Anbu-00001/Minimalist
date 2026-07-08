@@ -445,9 +445,48 @@ For the submission narrative (README/slides/video) and posture:
         audit disagreed with a wrong remote answer (363.30 vs computed
         360.91 — the audit's value matched gold), fallback call fired
         (calls 1→2), held answer shipped on exhaustion.
-11. [ ] logprob confidence signal via n_probs for unknown-verdict
-        categories (V17) — conservative rollout, dev-set calibrated
-12. [ ] GPU window: model matrix per V9
+11. [x] logprob confidence plumbing (V17) — implemented 2026-07-08:
+        `local_llm.complete_scored()` returns (answer, mean token logprob);
+        OpenAI-style `logprobs=True` verified working on our llama-server
+        b9888; router gate wired behind `config.LOGPROB_ESCALATE_BELOW`.
+        **Gate DISABLED (None)**: 26-task calibration showed pass/fail
+        mean-logprob distributions overlap (passes span -0.000..-0.118, a
+        fail sits at -0.101 inside that range; only 2 fails observed) — no
+        defensible threshold. Recalibrate after the local-model choice
+        settles (threshold is model-specific); the plumbing costs nothing.
+12. [ ] GPU window: model matrix per V9 — REFRAMED by V20: candidates are
+        now 2-3B models, not 4B+
 13. [x] language adoptions evaluated and closed — none adopted (V18)
 14. [ ] full 228-task benchmark re-run with V15+V16 in place (route mix
         and logic strict-score are the numbers to watch)
+
+---
+
+## V20. Grading environment is 4 GB RAM / 2 vCPU — model size and threading
+## are now first-order constraints (organizer announcement + guide v2, 2026-07-08)
+
+Verified from the updated Participant Guide (downloaded, primary source):
+- "Grading environment: 4 GB RAM, 2 vCPU. If bundling a local model, size it
+  to fit within these limits (2B–3B 4-bit quantized models are safe; 7B
+  4-bit fills the full RAM budget...)" — our baked Qwen3-4B Q4_K_M (~2.5GB
+  weights + KV cache) sits in the untested middle; needs an empirical
+  constrained-Docker test (--memory=4g --cpus=2) before trusting it.
+- "flagged: ZERO_API_CALLS... is not a failure. It just means your
+  submission made zero calls through the Fireworks proxy" — a fully-local
+  run is OFFICIALLY safe. The theoretical ceiling is a zero-token
+  accuracy-gate pass: unbeatable rank.
+- New failure status OUTPUT_MISSING; full failure table now documented.
+- 8 official practice tasks published (extracted to
+  test_io/practice_tasks.json) — validate the container without burning a
+  submission slot (10/hr limit).
+- Live leaderboard (fetched 2026-07-08): **29 submissions, ZERO passing
+  the accuracy gate** — 16 ACCURACY_GATE_FAILED, rest infra errors. The
+  gate is the real filter; token rank is currently academic. Several
+  competitors now explicitly run local-first cascades ("Frugal Router",
+  "FireCascade", "Local First, Tokens Last").
+- Fix landed: entrypoint threads are now cgroup-v2-aware (nproc reports
+  HOST cores under a CPU quota — 12 threads would thrash a 2-vCPU cgroup);
+  context reduced 4096→2048 to halve KV-cache memory.
+- Consequence for V9: the GPU model matrix pivots from 4B+ candidates to
+  2-3B (with the 4B kept only if the constrained-Docker test proves it
+  fits both RAM and the 10-minute budget at 2 threads).

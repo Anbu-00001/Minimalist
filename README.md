@@ -18,16 +18,18 @@ locally should never touch the network.**
       │
       ▼
  deterministic verification                agent/verifiers.py
-   code        → syntax-check + execute
-   sentiment   → label present & valid
+   code        → parser-oracle extract + execute
+   math        → independent program re-derivation
+   logic       → constraint-solver check (CSP)
+   sentiment   → grammar-constrained label re-read
    summaries   → word/sentence limits
-   NER         → JSON schema parse
+   NER         → generated under a JSON grammar
       │
       ├── pass ──────────────► keep local answer (0 tokens)
-      ├── unknown ─► self-consistency check (2nd local sample,
-      │              ≥60% agreement → keep local, else escalate)
+      ├── unknown ─► program/solver check, else self-consistency
+      │              (agreement → keep local, else escalate)
       └── fail ──────────────► escalate to Fireworks
-                               (category-aware model choice,
+                               (measured preference order,
                                 via FIREWORKS_BASE_URL only)
       │
       ▼
@@ -35,8 +37,10 @@ locally should never touch the network.**
 ```
 
 Escalation prefers non-reasoning models (a reasoning model's thinking trace
-bills as output tokens) and a code-specialist model for the two code
-categories. All remote calls go through the judging proxy (`FIREWORKS_BASE_URL`).
+bills as output tokens); escalated math answers are audited by the same free
+local re-derivation before being trusted, and a grounded disagreement buys
+one shot at the fallback model. All remote calls go through the judging
+proxy (`FIREWORKS_BASE_URL`).
 
 ## Build & run
 

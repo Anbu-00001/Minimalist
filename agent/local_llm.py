@@ -39,8 +39,20 @@ def complete(prompt: str, max_tokens: int = 768, system: str | None = None,
     """`grammar` is a llama.cpp GBNF string, passed via the server's
     per-request `grammar` field (tools/server/README.md). Ignored by
     non-llama backends, which merely won't constrain."""
+    text, _ = complete_scored(prompt, max_tokens=max_tokens, system=system,
+                              temperature=temperature, grammar=grammar)
+    return text
+
+
+def complete_scored(prompt: str, max_tokens: int = 768, system: str | None = None,
+                    temperature: float = 0.0, grammar: str | None = None,
+                    ) -> tuple[str | None, float | None]:
+    """Like complete(), but also returns the mean token logprob of the
+    generation — a free confidence signal (VERDICTS V17). Confidence is None
+    when the backend returns no logprobs; callers must treat that as
+    "no signal", never as low confidence."""
     if not available():
-        return None
+        return None, None
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -52,9 +64,16 @@ def complete(prompt: str, max_tokens: int = 768, system: str | None = None,
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
+            logprobs=True,
             extra_body=extra,
         )
     except Exception:
-        return None
-    text = resp.choices[0].message.content or ""
-    return text.strip() or None
+        return None, None
+    text = (resp.choices[0].message.content or "").strip()
+    lp = getattr(resp.choices[0], "logprobs", None)
+    confidence = None
+    if lp and getattr(lp, "content", None):
+        vals = [t.logprob for t in lp.content if t.logprob is not None]
+        if vals:
+            confidence = sum(vals) / len(vals)
+    return (text or None), confidence

@@ -46,3 +46,19 @@ OUTPUT_PATH = os.environ.get("OUTPUT_PATH", "/output/results.json")
 # 10-minute hard cap on the judging VM; keep headroom for startup + write-out.
 TOTAL_BUDGET_S = float(os.environ.get("TOTAL_BUDGET_S", "540"))
 REQUEST_TIMEOUT_S = float(os.environ.get("REQUEST_TIMEOUT_S", "25"))  # <30s/request rule
+
+# Mean-token-logprob floor: an unverifiable local answer below it skips the
+# self-consistency probe and escalates immediately (VERDICTS V17). None
+# disables the gate. Set ONLY from measured dev-set calibration — see
+# research/VERDICTS.md V17 for the distribution data behind the value.
+LOGPROB_ESCALATE_BELOW: float | None = None
+
+# Client-side throttle for dev-time remote testing against free-tier stand-ins
+# (e.g. Cerebras' 5 RPM) that would otherwise return 429s indistinguishable
+# from "model unavailable" and corrupt benchmark numbers with rate-limit
+# noise rather than real accuracy signal. None = no throttling (the real
+# Fireworks judging proxy has no such constraint; never set this for a
+# submission run).
+REMOTE_RPM_LIMIT: int | None = (
+    int(os.environ["REMOTE_RPM_LIMIT"]) if os.environ.get("REMOTE_RPM_LIMIT") else None
+)
