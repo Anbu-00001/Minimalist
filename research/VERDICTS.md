@@ -142,6 +142,268 @@ smoke-tested, then iterate. No verified competitor is doing verify-local-
 first (two name-alikes unverified/404). No Act-I precedent exists — nobody
 has meta-game experience on this track type.
 
+## V11. Code extraction: parser-oracle, not prose patterns (IMPLEMENTED 2026-07-08)
+
+The `_extract_code` prose-prefix bug (research/benchmark_run_2026-07-07.md
+Bug #3) was fixed by adopting EvalPlus's approach: a **longest-valid-segment
+search** where `ast.parse` is the oracle — iterate line ranges, keep the
+longest contiguous segment that parses as substantive Python. No prose
+regexes, no fence parsing, no language lists: prose, fence markers, and
+language tags exclude themselves by failing to parse. (Source:
+github.com/evalplus/evalplus `sanitize.py` `code_extract()` — "the longest
+valid Python code by non-empty line count"; corroborated by the two-stage
+fence-then-recovery convention in code-eval literature, arXiv 2403.17214.)
+One guard added on top: a winning segment must define something
+(def/class/import) or span ≥3 non-empty lines, because stray single lines of
+JavaScript (`max = arr[i];`) parse as Python. A fence explicitly tagged
+`python` whose content never parses still fails (declared-broken code).
+Installed in BOTH agent/verifiers.py (runtime) and eval/judge.py (kept as an
+independent copy — the measuring instrument must not import agent bugs).
+Measured on the same 228-task results: code-category fails 14 → 2 (12 were
+judge artifacts), judge ceiling 65% → 71%, local+consistent route fails
+20 → 10. Runtime effect: prose-prefixed local code answers no longer
+false-fail into paid escalations.
+
+## V12. Classifier: intent-first tie-breaks + generic markers (IMPLEMENTED 2026-07-08)
+
+Bug #4 fix, two changes to agent/classify.py, both category-generic:
+(1) rule order now puts explicit-intent categories (sentiment, NER,
+summarisation) before incidental-vocabulary ones (code, math, logic) —
+`max()` keeps the first maximum, so ties break toward intent ("a tweet about
+buggy software is still a sentiment task"); (2) keyword coverage extended
+with canonical task-phrasing markers: "clue"/"sitting"/"does it follow"
+(logic puzzles), "average speed"/" km"/"fraction"/"per hour" (rate-and-work
+word problems), "extract"/"organization" (NER), "a function"/"javascript"
+(code), plus `function name(` / `=>` in the code-block regex. Deliberately
+NOT added: bare "speed" or "how long" — they'd steal factual questions like
+"what is the speed of light". Measured: 87.3% → **96.5%** (220/228), math
+misroutes eliminated (36/36 — the costliest class: a math→factual misroute
+lost the ANSWER hint, the program check, and half the token cap). No
+category regressed. The 8 residual misses are factual↔summarisation-class
+confusions with ~zero runtime cost (identical verify() behavior).
+
+## V13. First full-run economics: 66 scored tokens/task; logic is the accuracy hole
+
+Full 228-task run (local + Cerebras gemma-4-31b stand-in, 2026-07-07): 46%
+of tasks never left the machine; 105 remote calls spent 15,131 tokens total
+= **66 scored tokens/task average** — the leaderboard number to beat.
+Program-aided math check went 5/5 against the deterministic judge. Verified
+accuracy holes after removing judge artifacts: logical_reasoning (9 pass /
+23 fail — BOTH local and the gemma stand-in fail hard constraint puzzles)
+and mathematical_reasoning (16 pass / 20 fail). Next research scope:
+(a) whether logic escalation should route to a thinking-enabled model
+despite token cost — the accuracy gate precedes token ranking, so failed
+logic tasks may cost more than thinking tokens do; (b) widening the
+program-check's firing conditions (currently needs verdict=unknown + number
+present + time headroom; it could also audit remote math answers for free);
+(c) sentiment's 8 residual fails (label-agreement active — check whether
+gold "mixed" cases are genuinely ambiguous).
+
+## V14. Sentiment "mixed" fails were a judge/verifier extraction bug, not
+## ambiguous gold (IMPLEMENTED 2026-07-08)
+
+Investigated per user request: "check whether gold-mixed cases are
+genuinely ambiguous before engineering anything." They were not. Root
+cause: `SENTIMENT_LABELS = ("positive", "negative", "neutral", "mixed")` —
+the fallback extraction scanned this tuple in **fixed order**, not by where
+the label actually occurs in the text. A "mixed" verdict is almost always
+justified with prose containing both "positive" and "negative" ("...positive
+aspects...negative aspects..."), so the scan found "positive" first and
+returned it — even when "Mixed" was the literal first word of the answer.
+Compounding it: gold-answer extraction never even tried the anchored
+`label:\s*X` regex the answer side already had; gold always went straight to
+the broken fallback. Same bug independently present in `agent/router.py`'s
+`_sentiment_label_agrees` (the runtime label-agreement check), so it was
+also causing live false-fail escalations, not just a dev-judge miscount.
+Fix: `_sentiment_label()` (both files) now tries an anchored
+`(?:label|sentiment|overall)\s*[:=]?\s*X` regex first, and falls back to
+whichever label word occurs **earliest in the text** — not tuple-priority
+order. Measured on the same 228-task results: sentiment pass 16 → **23**,
+fail 8 → **1** — true accuracy was 96%, not 67%. Overall strict score
+39% → **43%**, ceiling 65% → **74%**. The one real residual
+(`chatgpt_sentiment_classification_hard_1`) is a genuine nuanced
+double-negative case ("don't hate" → model hedged "neutral to slightly
+positive" vs gold "positive") — not worth engineering around.
+
+This is the third extraction-order bug found in one session (classify.py's
+"ner", the code prose-prefix, now this) — same root shape every time: code
+that decides among fixed categories by checking a **hardcoded priority
+order** or **unanchored substring**, rather than by what the text actually
+says or where. Worth a standing rule for future verifier/judge code: prefer
+an anchored "the label IS X" pattern first, and if scanning for bare
+keywords, rank by position-in-text, never by an arbitrary tuple order.
+
+---
+
+# Round-2 verdicts (2026-07-08) — analysis of the 8-file second research
+# corpus: logic_escalation_economics, logic_solver_tooling,
+# program_aided_verification_patterns, rust_math_tooling, go_graph_tooling,
+# opensource_quality_tools_round2, cpp_mojo_zig_potential,
+# academic_literature_survey
+
+## V15. Logic: solve with a constraint solver, do NOT escalate to thinking mode
+
+**Decision:** the logical_reasoning fix is a program-aided **solver check**
+(mirror of the V6 math check): local model translates the puzzle's clues
+into constraints, a deterministic CSP solver solves them, and the solver's
+verdict gates (and can supply) the answer. Thinking-mode escalation is
+rejected as the primary lever.
+
+Against thinking-mode escalation (research/logic_escalation_economics.md):
+- ZebraLogic's own abstract: accuracy decline with complexity "persists even
+  with larger models and increased inference-time computation."
+- "Inverse Scaling in Test-Time Compute" (2507.14417) names "deduction tasks
+  with constraint tracking" — exactly our puzzle class — as a category where
+  LONGER reasoning makes accuracy WORSE across frontier families.
+- "Do Thinking Tokens Help or Trap?" (2506.23840): "Incorrect responses
+  contain twice as many thinking tokens as correct ones."
+- BBEH Table 2 (single-fetch, cell-level UNVERIFIED): DeepSeek R1 scored
+  8.0% on Zebra Puzzles vs non-reasoning Gemma2-27B's 23.0% — reasoning
+  advantage is task-dependent, not uniform.
+- No public logic-puzzle numbers exist at all for gemma-4-31b or minimax-m3
+  (thinking on OR off) — escalating to them on thinking for logic would be
+  flying blind at 3-30x token multipliers (blog-range, no consensus).
+
+For the solver path (logic_solver_tooling.md + go_graph_tooling.md,
+independently convergent):
+- **Logic.py: 24.9% → 91.4% on ZebraLogicBench** (Llama-3.1-70B alone vs
+  LLM-formalizes-solver-solves; arXiv 2502.15776, directly fetched).
+- Logic-LM (EMNLP 2023): +39.2% over standard prompting across five logic
+  datasets including LogicalDeduction (our seating/ordering class); includes
+  self-refinement on solver error messages.
+- SatLM (NeurIPS 2023): declarative-spec-then-solve beats program-aided
+  imperative code precisely on "constraint solving problems that require
+  more sophisticated planning and search"; "the declarative specification
+  is closer to the problem description than the reasoning steps are, so the
+  LLM can parse it out of the description more accurately" — i.e.
+  translation is extraction-shaped, which per V5 is exactly what our
+  grammar-constrained decoding is FOR.
+- Tooling verified on PyPI: **python-constraint2** (2-4MB, BSD, active,
+  `from constraint import *`, string constraints auto-parsed) and
+  **z3-solver** (13-47MB wheel, MIT, self-contained; working zebra +
+  knights-and-knaves code captured verbatim in the research file).
+  OR-Tools (~30MB + numpy/pandas deps) is third choice.
+
+**Implementation shape** (next build item): `_logic_solver_check` in the
+router — classify logic sub-shape (assignment/ordering = finite-domain CSP;
+skip optimization puzzles like bridge-crossing, which fall through to
+escalation as today); ask the local model (free) to emit variables/domains/
+constraints in python-constraint's simple string form; `getSolutions()`;
+if exactly one solution and it matches the local answer → pass; if exactly
+one solution and it contradicts the local answer → ship the solver-derived
+assignment (formatted in prose); zero or multiple solutions → translation
+failed, escalate as today. Start with python-constraint2 (simplest emission
+target for a 4B model — fewer translation errors); move to Z3 only if
+expressiveness runs out.
+
+## V16. Widen program-aided checking to audit REMOTE answers (CRITIC pattern)
+
+**Decision:** run the existing `_math_program_check` (and V15's solver
+check, once built) against remote answers too — a free local audit of a
+paid answer, deciding between remote answer, second remote model, or
+solver-derived value.
+
+Evidence (program_aided_verification_patterns.md):
+- CRITIC (ICLR 2024, PDF read directly): verify-then-correct on an
+  *already-produced* answer via code interpreter is a published, named
+  pattern (+2 to +16 points across GSM8k/SVAMP/TabMWP).
+- CRITIC's ablation is the sharp edge: **ungrounded self-critique made
+  results worse than no verification at all** (text-davinci-003: 70.1 →
+  68.3 "w/o Tool") — "Without execution feedback from the interpreter, the
+  ability of LLMs to correct programs becomes limited and unstable." Never
+  add an LLM-critiques-LLM step without execution grounding.
+- Known literature gap (explicitly searched, not found): no study measures
+  how often an independent translation-to-code shares the SAME
+  misunderstanding as the answer it checks. Consequence for us: treat
+  program-agreement as a positive signal, never as an override that
+  silently replaces a disagreeing answer without a fallback path.
+- Notable for the submission writeup: lm-evaluation-harness and lighteval
+  only execute symbolic *equivalence grading against a known gold*
+  (math-verify); neither re-derives answers from the problem text. AMDA's
+  from-scratch re-derivation check is genuinely ahead of the reference
+  eval frameworks here.
+
+## V17. Add a free logprob confidence signal for the "unknown" categories
+
+**Decision:** request `n_probs`/logprobs on local completions and use
+mean/min token logprob as a third routing signal for factual_knowledge and
+logical_reasoning (the categories where verify() returns "unknown" and we
+currently lean only on 2-sample self-consistency).
+
+Evidence:
+- llama-server `/completion` exposes per-token `logprob` via `n_probs` —
+  directly confirmed from tools/server/README.md; zero new dependencies
+  (opensource_quality_tools_round2.md §5.1). `llama-perplexity` confirmed
+  NOT usable for single answers.
+- Academic backing (academic_literature_survey.md): Semantic Entropy Probes
+  (2406.15927) — cheap single-pass uncertainty from hidden states; CISC
+  (2502.06233) — confidence-weighted self-consistency cuts sampled paths
+  >40%, "LLMs can effectively judge the correctness of their own outputs";
+  LLM Performance Predictors (2601.07006) — escalation meta-models built
+  exactly from logprob/entropy features.
+- Calibrate thresholds on the dev set only; a logprob gate that saves one
+  remote call per few tasks is pure rank profit, but an overfit threshold
+  that ships wrong local answers costs the accuracy gate. Conservative
+  rollout: use LOW confidence only to short-circuit self-consistency and
+  escalate faster (saves local time, never ships more risk).
+- Deferred, noted: HHEM-2.1-Open (~100M, Apache-2.0) / TinyLettuce (17M)
+  are real premise-vs-hypothesis groundedness checkers usable for
+  summarisation verification (context = source passage), but add a
+  transformers dependency + weights to the image for a category currently
+  at 63% strict. Revisit only if the leaderboard shows summarisation
+  failing.
+
+## V18. Languages (Rust/Go/C++/Mojo/Zig): no adoptions — evidence-closed
+
+Per-language, from the four collect-files (all honest-negative where
+negative):
+- **Rust:** `py-evalexpr` (~0.5MB manylinux+musllinux wheels, pip-only,
+  wraps evalexpr) is real and would harden the math sandbox by
+  construction — but evalexpr's own README says "not built with untrusted
+  input in mind"; our `_EXPR_OK` whitelist + subprocess + timeout already
+  constrains the same surface. Optional hardening, not adopted. No viable
+  Rust CAS (symbolica is source-available/non-standard license —
+  disqualifying), no derivation-path tooling ("nothing notable found" —
+  the one match is a 39-star hobby project).
+- **Go:** explicit negative finding — no Go knights-and-knaves or seating
+  solvers exist; Go's one CSP library (centipede, 76 stars) is 4 years
+  stale and self-described "work in progress." Every published LLM+solver
+  logic result uses Python-reachable solvers. Go graph tooling closed.
+- **C++ (llama-cpp-python):** prebuilt CPU wheel (22.1MB, directly
+  measured) with the same GBNF dialect exists — but zero benchmark evidence
+  it beats llama-server over loopback (the one primary source is a
+  qualitative overhead discussion; a search-synthesis suggests the C++
+  server WINS on TTFT for short single requests). Switching would risk a
+  proven pipeline for an unproven gain. Closed.
+- **Mojo:** MAX-full Docker image directly measured at **11.9GB
+  compressed — over our entire 10GB cap by itself**; compiler
+  closed-source until Fall 2026; Modular's own 1.0 scope is GPU-kernel
+  authoring, not glue code. Closed.
+- **Zig:** llama.cpp removed Zig build support in May 2024 (merged PR
+  7471, maintainer: "I don't think the Zig build system adds much value").
+  Dead avenue. Closed.
+
+## V19. Academic framing: AMDA sits in the exact regime where cascades win
+
+For the submission narrative (README/slides/video) and posture:
+- **FrugalGPT (2305.05176)** is the seminal citation for our architecture:
+  "match the performance of the best individual LLM (e.g. GPT-4) with up
+  to 98% cost reduction" via LLM cascade.
+- **"Is Escalation Worth It?" (2605.06350)** finds cascades are limited by
+  "structural cost, since cascades pay the cheap model before any
+  escalation decision" — and AMDA's cheap model costs ZERO scored tokens.
+  The strongest published critique of cascades is structurally neutralized
+  by this competition's scoring rules; that argument belongs in the
+  submission description verbatim.
+- **"Dynamic Model Routing and Cascading for Efficient LLM Inference: A
+  Survey" (2603.04445)** is the field map — cite it once as the anchor.
+- Judge posture (V4) reconfirmed and sharpened by the new bias literature:
+  CALM's 12-bias taxonomy (2410.02736) and "Reliability without Validity"
+  (2606.19544). Keep answers clean, complete, well-formatted; no gaming.
+- xRouter (2510.08439) critiques "static escalation rules" like ours — the
+  defense is V7's: our rules are deterministic quality estimators with
+  zero-cost first stage, which learned routers exist to approximate.
+
 ---
 
 ## Priority actions (code)
@@ -153,5 +415,39 @@ has meta-game experience on this track type.
        JSON grammar for NER, constrained label-agreement for sentiment (V5)
        — functionally tested against llama-server 2026-07-07, all paths pass
 4. [x] eval/judge.py: math-verify integration (V6) — dev-venv only dependency
-5. [ ] .env stand-in test with Cerebras gemma-4-31b (V8) — needs user signup
-6. [ ] GPU window: model matrix per V9
+5. [x] .env stand-in test with Cerebras gemma-4-31b (V8) — full 228-task run
+       2026-07-07, escalation path proven live (V13)
+6. [x] parser-oracle code extraction in verifiers.py + judge.py (V11)
+7. [x] classifier intent-first ordering + generic markers, 96.5% (V12)
+8. [x] sentiment label extraction fixed in judge.py + router.py (V14) —
+       true sentiment accuracy 96%, strict score 39%→43%, ceiling 65%→74%
+9. [x] **logic solver check (V15)** — implemented 2026-07-08:
+       python-constraint2 in requirements + image; verifiers.py gained
+       parse_logic_translation (strict PEOPLE/POSITIONS/C: format,
+       whitelist: declared-identifiers-only, no **/dots/brackets/quotes,
+       empty __builtins__), solve_logic_csp (AllDifferent always, ≤7 vars
+       ≤10 domain, 2-pull uniqueness test), assignment_matches_answer
+       (clause-scoped nearest-number, ordinal-aware — window-based matching
+       was proven wrong on dense listings and replaced), format_assignment.
+       Live-tested against llama-server on real dev puzzles: 4/4 unique
+       solutions matched gold exactly (incl. 3 overrides of wrong local
+       answers — the base-rate failure case the solver exists to fix);
+       1 mistranslation (ages puzzle, contradictory constraints) correctly
+       yielded 'none' → skip, no wrong answer shipped. Uniqueness guardrail
+       validated in the wild on its first encounter.
+10. [x] program-check audit of remote math answers (V16) — implemented
+        2026-07-08: _math_program_check is tri-state (None = couldn't
+        check, never treated as disagreement); escalation loop holds a
+        doubted-but-verified answer, gives the fallback model one shot,
+        ships the held answer if the fallback also fails/doubts (never
+        discards over our own doubt; both-doubted ties break to the
+        higher-preference model). All branches proven live via Cerebras:
+        audit disagreed with a wrong remote answer (363.30 vs computed
+        360.91 — the audit's value matched gold), fallback call fired
+        (calls 1→2), held answer shipped on exhaustion.
+11. [ ] logprob confidence signal via n_probs for unknown-verdict
+        categories (V17) — conservative rollout, dev-set calibrated
+12. [ ] GPU window: model matrix per V9
+13. [x] language adoptions evaluated and closed — none adopted (V18)
+14. [ ] full 228-task benchmark re-run with V15+V16 in place (route mix
+        and logic strict-score are the numbers to watch)

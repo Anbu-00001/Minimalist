@@ -10,12 +10,14 @@ judge (later, with the Fireworks key) still has to decide.
 
 Usage: .venv/bin/python eval/judge.py [eval/results_dev.json] [--show-fails]
 """
+import ast
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import textwrap
 from collections import Counter, defaultdict
 
 from json_repair import repair_json
@@ -99,13 +101,47 @@ def _norm_ner(obj: dict) -> dict[str, frozenset]:
     return out
 
 
+# Kept as an independent copy of agent.verifiers.extract_python_code on
+# purpose: the judge is the measuring instrument and must not inherit agent
+# bugs by importing them.
+def _substantive_code(cand: str, tree: ast.Module) -> bool:
+    """Stray fragments of prose or other languages can parse as Python
+    (`max = arr[i];` is a line of JavaScript that does) — real code-task
+    answers define something or span multiple lines."""
+    if any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+                          ast.Import, ast.ImportFrom)) for n in ast.walk(tree)):
+        return True
+    return sum(1 for l in cand.splitlines() if l.strip()) >= 3
+
+
 def _extract_code(text: str) -> str | None:
-    m = re.search(r"```(?:python|py)?\s*(.*?)```", text, re.DOTALL)
-    if m:
-        return m.group(1).strip()
-    if re.search(r"^\s*(def |class |import )", text, re.MULTILINE):
-        return text.strip()
-    return None
+    """Longest contiguous run of lines that parses as substantive Python
+    (EvalPlus-style longest-valid-segment search). The parser is the oracle,
+    so prose, fence markers, and language tags exclude themselves."""
+    lines = text.splitlines()
+    n = len(lines)
+    nonempty = [bool(l.strip()) for l in lines]
+    best, best_count = None, 0
+    for i in range(n):
+        if not nonempty[i]:
+            continue
+        if sum(nonempty[i:]) <= best_count:
+            break  # no later start can beat the current best
+        for j in range(n, i, -1):
+            count = sum(nonempty[i:j])
+            if count <= best_count:
+                break
+            cand = textwrap.dedent("\n".join(lines[i:j])).strip()
+            if not cand:
+                continue
+            try:
+                tree = ast.parse(cand)
+            except SyntaxError:
+                continue
+            if _substantive_code(cand, tree):
+                best, best_count = cand, count
+                break  # longest segment for this start found
+    return best
 
 
 def _run_python(code: str, timeout: float = 5.0) -> tuple[int, str]:
@@ -172,13 +208,25 @@ def _judge_math(t: dict) -> tuple[str, str]:
     return "fail", f"got {got}, gold {gold}"
 
 
+def _sentiment_label(text: str) -> str | None:
+    """An explicit 'label: X' statement wins outright. Otherwise, the
+    earliest-occurring label word in the text — NOT SENTIMENT_LABELS' fixed
+    tuple order, which always finds "positive" inside a "mixed" answer's own
+    justification ("...positive aspects...negative aspects...") before ever
+    considering the word "mixed" that was actually declared."""
+    t = text.lower()
+    m = re.search(r"(?:label|sentiment|overall)\s*[:=]?\s*(positive|negative|neutral|mixed)", t)
+    if m:
+        return m.group(1)
+    hits = [(t.find(l), l) for l in SENTIMENT_LABELS if l in t]
+    return min(hits)[1] if hits else None
+
+
 def _judge_sentiment(t: dict) -> tuple[str, str]:
-    gold_label = next((l for l in SENTIMENT_LABELS if l in t["gold_answer"].lower()), None)
+    gold_label = _sentiment_label(t["gold_answer"])
     if gold_label is None:
         return "unsure", "no label in gold"
-    a = t["answer"].lower()
-    m = re.search(r"label\s*[:=]?\s*(positive|negative|neutral|mixed)", a)
-    got = m.group(1) if m else next((l for l in SENTIMENT_LABELS if l in a), None)
+    got = _sentiment_label(t["answer"])
     if got is None:
         return "fail", "no label in answer"
     return ("pass", got) if got == gold_label else ("fail", f"got {got}, gold {gold_label}")
@@ -264,11 +312,12 @@ def _judge_summary(t: dict) -> tuple[str, str]:
 def _judge_code(t: dict) -> tuple[str, str]:
     code = _extract_code(t["answer"])
     if code is None:
+        if re.search(r"```(?:python|py)\b", t["answer"]):
+            return "fail", "declared python, but nothing in it parses"
+        if re.search(r"```|^\s*(function |const |let )", t["answer"], re.MULTILINE):
+            return "unsure", "non-python code; not checkable"
         return "fail", "no code in answer"
-    try:
-        compile(code, "<ans>", "exec")
-    except SyntaxError as e:
-        return "fail", f"syntax error: {e.msg}"
+    # extraction guarantees the segment parses; run proves it doesn't raise
     rc, out = _run_python(code)
     if rc != 0:
         return "fail", "code raises at runtime"

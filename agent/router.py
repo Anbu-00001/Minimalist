@@ -10,8 +10,10 @@ import time
 
 from . import config, grammars, local_llm, remote
 from .classify import classify
-from .verifiers import (SENTIMENT_LABELS, extract_expression, extract_final_number,
-                        numbers_agree, run_expression, verify)
+from .verifiers import (SENTIMENT_LABELS, assignment_matches_answer,
+                        extract_expression, extract_final_number,
+                        format_assignment, numbers_agree, parse_logic_translation,
+                        run_expression, solve_logic_csp, verify)
 
 SYSTEM = "You are a precise assistant. Answer correctly and concisely. No preamble."
 
@@ -51,11 +53,24 @@ def _self_consistent(prompt: str, first: str) -> bool:
     return overlap > 0.6
 
 
+def _stated_sentiment_label(answer: str) -> str | None:
+    """An explicit 'label: X' statement wins outright. Otherwise, the
+    earliest-occurring label word — NOT SENTIMENT_LABELS' fixed tuple order,
+    which finds "positive" inside a "mixed" answer's own justification
+    ("...positive aspects...negative aspects...") before ever considering
+    the word "mixed" that was actually declared (research/benchmark_run_2026-07-07.md)."""
+    a = answer.lower()
+    m = re.search(r"(?:label|sentiment|overall)\s*[:=]?\s*(positive|negative|neutral|mixed)", a)
+    if m:
+        return m.group(1)
+    hits = [(a.find(l), l) for l in SENTIMENT_LABELS if l in a]
+    return min(hits)[1] if hits else None
+
+
 def _sentiment_label_agrees(prompt: str, answer: str) -> bool:
     """Exact-label agreement between the shipped answer and a second,
     grammar-constrained read (free local tokens buy real confidence)."""
-    m = re.search(r"label\s*[:=]?\s*(positive|negative|neutral|mixed)", answer.lower())
-    stated = m.group(1) if m else next((l for l in SENTIMENT_LABELS if l in answer.lower()), None)
+    stated = _stated_sentiment_label(answer)
     if stated is None:
         return False
     second = local_llm.complete(
@@ -66,25 +81,69 @@ def _sentiment_label_agrees(prompt: str, answer: str) -> bool:
     return second.strip().lower() == stated
 
 
-def _math_program_check(prompt: str, answer: str) -> bool:
+def _math_program_check(prompt: str, answer: str) -> bool | None:
     """Program-aided verification: independently translate the problem into an
     arithmetic expression, execute it, and compare with the stated answer.
-    Deterministic and free (VERDICTS V6)."""
+    Deterministic and free (VERDICTS V6). Tri-state: True/False means a real
+    comparison happened; None means no check was possible (no stated number,
+    local model unavailable, no usable expression) — callers must not treat
+    None as disagreement (VERDICTS V16)."""
     stated = extract_final_number(answer)
     if stated is None:
-        return False
+        return None
     reply = local_llm.complete(
         prompt + "\n\nWrite ONE Python arithmetic expression (a single line, no "
         "imports, no variables) that computes the final numeric answer. "
         "Output only the expression.",
         max_tokens=96, system=SYSTEM)
     if not reply:
-        return False
+        return None
     expr = extract_expression(reply)
     if expr is None:
-        return False
+        return None
     value = run_expression(expr)
-    return value is not None and numbers_agree(stated, value)
+    if value is None:
+        return None
+    return numbers_agree(stated, value)
+
+
+LOGIC_TRANSLATE_SUFFIX = (
+    "\n\nTranslate the puzzle above into constraints. Output EXACTLY this "
+    "format and nothing else:\n"
+    "PEOPLE: name1, name2, ...\n"
+    "POSITIONS: 1..N\n"
+    "C: <one constraint per line>\n"
+    "Use lowercase first names as integer position variables. Allowed "
+    "operators: == != < > <= >= + - * % abs() and or not. Examples:\n"
+    "C: emily == 3\n"
+    "C: frank == grace + 1\n"
+    "C: abs(ivy - emily) != 1\n"
+    "C: henry % 2 == 0")
+
+
+def _logic_solver_check(prompt: str, answer: str) -> tuple[str, str | None]:
+    """Solver-aided logic verification (VERDICTS V15): the local model
+    translates the puzzle into a declarative constraint form — extraction,
+    not reasoning (SatLM) — and a CSP solver decides. Returns
+      ('agree', None)    unique solution matches the stated answer
+      ('override', text) unique solution contradicts it; text is the
+                         solver-derived answer
+      ('skip', None)     no decisive translation — under-translation yields
+                         multiple solutions, mistranslation usually none, so
+                         uniqueness itself is the guardrail."""
+    reply = local_llm.complete(prompt + LOGIC_TRANSLATE_SUFFIX,
+                               max_tokens=256, system=SYSTEM)
+    if not reply:
+        return "skip", None
+    parsed = parse_logic_translation(reply)
+    if parsed is None:
+        return "skip", None
+    status, solution = solve_logic_csp(*parsed)
+    if status != "unique":
+        return "skip", None
+    if assignment_matches_answer(solution, answer):
+        return "agree", None
+    return "override", format_assignment(solution)
 
 
 def solve(task: dict, deadline: float) -> dict:
@@ -111,26 +170,58 @@ def solve(task: dict, deadline: float) -> dict:
                 verdict = "fail"  # second constrained read disagrees on the label
             if verdict == "pass":
                 route = "local"
-            elif (verdict == "unknown" and category == "mathematical_reasoning"
-                    and time_left > 90 and _math_program_check(prompt, answer)):
-                route = "local+program"
-            elif (verdict == "unknown" and category != "mathematical_reasoning"
-                    and time_left > 90 and _self_consistent(full_prompt, answer)):
-                route = "local+consistent"
+            elif verdict == "unknown" and time_left > 90:
+                if category == "mathematical_reasoning":
+                    if _math_program_check(prompt, answer) is True:
+                        route = "local+program"
+                    else:
+                        answer = None
+                elif category == "logical_reasoning":
+                    status, solver_answer = _logic_solver_check(prompt, answer)
+                    if status == "agree":
+                        route = "local+solver"
+                    elif status == "override":
+                        # the solver's unique solution beats a free-form
+                        # guess at our worst category (VERDICTS V15)
+                        answer, route = solver_answer, "solver"
+                    elif _self_consistent(full_prompt, answer):
+                        route = "local+consistent"
+                    else:
+                        answer = None
+                elif _self_consistent(full_prompt, answer):
+                    route = "local+consistent"
+                else:
+                    answer = None
             else:
-                answer = None  # fail, or unconfident unknown -> escalate
+                answer = None  # fail, or unknown with no time to check -> escalate
 
     if answer is None:
         cap = config.REMOTE_MAX_TOKENS.get(category, 384)
         remote_prompt = prompt + REMOTE_SUFFIX
+        doubted = None  # verified remote answer our free audit disagreed with
         for model in pick_models(category):
             remote_answer = remote.complete(remote_prompt, model=model,
                                             max_tokens=cap, system=SYSTEM)
             if not remote_answer:
                 continue  # timeout/error -> one shot at the fallback model
             answer, route = remote_answer, f"remote:{model}"
-            if verify(category, prompt, remote_answer) != "fail":
-                break  # verified (or unverifiable) remote answer: ship it
+            if verify(category, prompt, remote_answer) == "fail":
+                continue
+            if (category == "mathematical_reasoning"
+                    and deadline - time.monotonic() > 120
+                    and _math_program_check(prompt, remote_answer) is False):
+                # free local audit of the paid answer (VERDICTS V16): a real
+                # disagreement buys the fallback model one shot — but the
+                # audit itself can be wrong, so the doubted answer is held,
+                # never discarded; if both models end up doubted, the
+                # higher-preference one ships
+                if doubted is None:
+                    doubted = (remote_answer, route)
+                continue
+            break  # verified remote answer, no grounded doubt: ship it
+        else:
+            if doubted is not None:
+                answer, route = doubted
 
     if answer is None:  # last resort: any local attempt beats an empty string
         answer = local_llm.complete(full_prompt, system=SYSTEM) or "Unable to answer."

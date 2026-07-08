@@ -3,30 +3,55 @@ A local answer that passes verification never spends a scored token.
 
 Verdicts: "pass" (confident, keep local), "fail" (escalate),
 "unknown" (no cheap check exists — router decides via policy)."""
+import ast
 import json
 import re
 import subprocess
 import sys
 import tempfile
+import textwrap
 
 SENTIMENT_LABELS = {"positive", "negative", "neutral", "mixed"}
 
 
-def _extract_code(text: str) -> str | None:
-    m = re.search(r"```(?:python|py|javascript|js)?\s*(.*?)```", text, re.DOTALL)
-    if m:
-        return m.group(1).strip()
-    if re.search(r"^\s*(def |class |function |const |let )", text, re.MULTILINE):
-        return text.strip()
-    return None
-
-
-def _python_syntax_ok(code: str) -> bool:
-    try:
-        compile(code, "<answer>", "exec")
+def _substantive(cand: str, tree: ast.Module) -> bool:
+    """Stray fragments of prose or other languages can parse as Python
+    (`max = arr[i];` is a line of JavaScript that does) — real code-task
+    answers define something or span multiple lines."""
+    if any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+                          ast.Import, ast.ImportFrom)) for n in ast.walk(tree)):
         return True
-    except SyntaxError:
-        return False
+    return sum(1 for l in cand.splitlines() if l.strip()) >= 3
+
+
+def extract_python_code(text: str) -> str | None:
+    """Longest contiguous run of lines that parses as substantive Python
+    (EvalPlus-style longest-valid-segment search). The parser is the oracle,
+    so prose, fence markers, and language tags exclude themselves."""
+    lines = text.splitlines()
+    n = len(lines)
+    nonempty = [bool(l.strip()) for l in lines]
+    best, best_count = None, 0
+    for i in range(n):
+        if not nonempty[i]:
+            continue
+        if sum(nonempty[i:]) <= best_count:
+            break  # no later start can beat the current best
+        for j in range(n, i, -1):
+            count = sum(nonempty[i:j])
+            if count <= best_count:
+                break
+            cand = textwrap.dedent("\n".join(lines[i:j])).strip()
+            if not cand:
+                continue
+            try:
+                tree = ast.parse(cand)
+            except SyntaxError:
+                continue
+            if _substantive(cand, tree):
+                best, best_count = cand, count
+                break  # longest segment for this start found
+    return best
 
 
 def _run_python(code: str, timeout: float = 5.0) -> bool:
@@ -95,6 +120,130 @@ def numbers_agree(a: float, b: float) -> bool:
     return abs(a - b) <= max(0.02, abs(b) * 0.005)
 
 
+# ---------- solver-aided logic verification (VERDICTS V15) ----------
+# The local model translates an assignment/ordering puzzle into a tiny
+# declarative form (people + positions + constraints); a CSP solver decides.
+# Uniqueness doubles as the guardrail: an under-translated puzzle has many
+# solutions and a mistranslated one usually has none — only a decisive,
+# fully-constraining translation ever acts (Logic-LM / SatLM pattern).
+
+_LOGIC_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+# expression whitelist: no dots/brackets/quotes (no attribute access or
+# indexing under eval) and no ** (integer-blowup); % allowed for even/odd
+_LOGIC_EXPR_OK = re.compile(r"^[a-z0-9_\s()+\-*%<>=!]+$")
+_LOGIC_WORDS_OK = {"or", "and", "not", "abs"}
+_LOGIC_MAX_VARS = 7          # n! alldiff assignments stays in milliseconds
+_LOGIC_MAX_DOMAIN = 10
+_LOGIC_MAX_CONSTRAINTS = 20
+
+
+def parse_logic_translation(text: str):
+    """Parse the strict PEOPLE/POSITIONS/C: emission into
+    (names, domain, exprs), or None if anything is off-format or outside
+    the whitelist. Every identifier in a constraint must be a declared name."""
+    names, domain, exprs = [], [], []
+    for line in text.splitlines():
+        line = line.strip()
+        if line.upper().startswith("PEOPLE:"):
+            names = [n.strip().lower() for n in line.split(":", 1)[1].split(",") if n.strip()]
+        elif line.upper().startswith("POSITIONS:"):
+            body = line.split(":", 1)[1].strip()
+            m = re.match(r"^(\d+)\s*(?:\.\.|-|to)\s*(\d+)$", body)
+            if m:
+                lo, hi = int(m.group(1)), int(m.group(2))
+                if lo < hi:
+                    domain = list(range(lo, hi + 1))
+            else:
+                try:
+                    domain = sorted({int(v) for v in body.split(",")})
+                except ValueError:
+                    return None
+        elif line.upper().startswith("C:"):
+            exprs.append(line.split(":", 1)[1].strip().lower())
+    if not (2 <= len(names) <= _LOGIC_MAX_VARS) or len(set(names)) != len(names):
+        return None
+    if any(not _LOGIC_NAME_RE.match(n) or n in _LOGIC_WORDS_OK for n in names):
+        return None
+    if not domain or len(domain) > _LOGIC_MAX_DOMAIN or len(domain) < len(names):
+        return None
+    if not exprs or len(exprs) > _LOGIC_MAX_CONSTRAINTS:
+        return None
+    allowed = set(names) | _LOGIC_WORDS_OK
+    for e in exprs:
+        if len(e) > 120 or "**" in e or not _LOGIC_EXPR_OK.match(e):
+            return None
+        idents = set(re.findall(r"[a-z_][a-z0-9_]*", e))
+        if not idents & set(names) or idents - allowed:
+            return None
+    return names, domain, exprs
+
+
+def solve_logic_csp(names: list[str], domain: list[int], exprs: list[str]):
+    """Solve the parsed translation. Returns ('unique', {name: pos}) only
+    when exactly one assignment satisfies everything; ('multiple'|'none'|
+    'error', None) otherwise. Positions are assumed pairwise distinct — the
+    defining property of the assignment/ordering puzzles this targets."""
+    from constraint import AllDifferentConstraint, Problem
+
+    problem = Problem()
+    problem.addVariables(names, domain)
+    problem.addConstraint(AllDifferentConstraint())
+    args = ", ".join(names)
+    for e in exprs:
+        try:
+            # whitelist above guarantees the expression is pure arithmetic
+            # over declared names; empty builtins leave nothing else callable
+            fn = eval(f"lambda {args}: ({e})", {"__builtins__": {}, "abs": abs})
+            problem.addConstraint(fn, names)
+        except SyntaxError:
+            return "error", None
+    try:
+        it = problem.getSolutionIter()
+        first = next(it, None)
+        if first is None:
+            return "none", None
+        if next(it, None) is not None:
+            return "multiple", None
+        return "unique", dict(first)
+    except Exception:
+        return "error", None
+
+
+def _stated_position(name: str, clauses: list[str]) -> int | None:
+    """The position an answer assigns to a name: in the first clause that
+    mentions the name alongside a number, the number nearest the name.
+    Clause = line/comma/semicolon segment — proximity across clause
+    boundaries leaks in the neighbouring assignment's digits ("...seat 1,
+    Henry in seat 2" puts 1 nearer to Henry than his own 2). Ordinals
+    (1st/2nd/...) count as numbers."""
+    for clause in clauses:
+        m = re.search(re.escape(name), clause)
+        if not m:
+            continue
+        nums = [(min(abs(n.start() - m.end()), abs(m.start() - n.end())), int(n.group(1)))
+                for n in re.finditer(r"\b(\d+)(?:st|nd|rd|th)?\b", clause)]
+        if nums:
+            return min(nums)[1]
+    return None
+
+
+def assignment_matches_answer(solution: dict, answer: str) -> bool:
+    """Does the answer's stated assignment agree with the solver's? Every
+    name must be stated at its solved position; any contradiction or
+    absence counts as disagreement."""
+    clauses = re.split(r"[\n,;]", answer.lower())
+    return all(_stated_position(name, clauses) == pos
+               for name, pos in solution.items())
+
+
+def format_assignment(solution: dict) -> str:
+    """Deterministic prose for a solver-derived assignment, lowest position
+    first — the shape the acceptance criteria for these tasks ask for."""
+    lines = [f"Position {pos}: {name.capitalize()}"
+             for name, pos in sorted(solution.items(), key=lambda kv: kv[1])]
+    return "\n".join(lines)
+
+
 def _word_limit_from_prompt(prompt: str) -> int | None:
     m = re.search(r"(?:in |under |at most |no more than |maximum of )(\d+) words", prompt.lower())
     return int(m.group(1)) if m else None
@@ -106,16 +255,15 @@ def verify(category: str, prompt: str, answer: str) -> str:
     a = answer.strip()
 
     if category in ("code_generation", "code_debugging"):
-        code = _extract_code(a)
-        if code is None:
-            return "fail"
-        looks_python = "def " in code or "import " in code or "print(" in code
-        if looks_python:
-            if not _python_syntax_ok(code):
-                return "fail"
-            # run only self-contained snippets; function defs alone always exit 0
+        code = extract_python_code(a)
+        if code is not None:
+            # extraction guarantees it parses; run only proves it doesn't raise
             return "pass" if _run_python(code) else "fail"
-        return "unknown"  # non-python code: syntax not cheaply checkable
+        if re.search(r"```(?:python|py)\b", a):
+            return "fail"  # declared python, but nothing in it parses
+        if re.search(r"```|^\s*(function |const |let )", a, re.MULTILINE):
+            return "unknown"  # non-python code: syntax not cheaply checkable
+        return "fail"  # a code task answered with no code at all
 
     if category == "sentiment_classification":
         return "pass" if any(lbl in a.lower() for lbl in SENTIMENT_LABELS) else "fail"
