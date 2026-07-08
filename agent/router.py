@@ -12,8 +12,10 @@ from . import config, grammars, local_llm, remote
 from .classify import classify
 from .verifiers import (SENTIMENT_LABELS, assignment_matches_answer,
                         extract_expression, extract_final_number,
-                        format_assignment, numbers_agree, parse_logic_translation,
-                        run_expression, solve_logic_csp, verify)
+                        extract_python_code, format_assignment, numbers_agree,
+                        parse_logic_translation, primary_function_name,
+                        run_expression, run_with_assertions, solve_logic_csp,
+                        verify)
 
 SYSTEM = "You are a precise assistant. Answer correctly and concisely. No preamble."
 
@@ -107,6 +109,30 @@ def _math_program_check(prompt: str, answer: str) -> bool | None:
     return numbers_agree(stated, value)
 
 
+def _code_assertion_check(prompt: str, code: str) -> bool | None:
+    """CRITIC-lite value check (VERDICTS V21): `verify()`'s script-only run
+    can't catch a wrong-but-non-crashing candidate (`return nums[0]` for a
+    "find the max" spec never raises), since a bare function definition is
+    never actually called as a script. The local model, shown only the task
+    spec -- never the candidate code, so the same misreading can't leak into
+    both the answer and its own check -- writes a few example assertions
+    against the candidate's own function name; we splice and execute them.
+    Tri-state like _math_program_check: None means no usable assertion was
+    produced, not disagreement."""
+    name = primary_function_name(code)
+    if name is None:
+        return None
+    reply = local_llm.complete(
+        prompt + f"\n\nWrite exactly 3 Python assert statements that check "
+        f"correct behavior of a function named `{name}`, one per line, no "
+        "explanation. Example format: assert " + name + "(...) == ...",
+        max_tokens=160, system=SYSTEM)
+    if not reply:
+        return None
+    assertions = [l for l in reply.splitlines() if l.strip().startswith("assert ")]
+    return run_with_assertions(code, assertions)
+
+
 LOGIC_TRANSLATE_SUFFIX = (
     "\n\nTranslate the puzzle above into constraints. Output EXACTLY this "
     "format and nothing else:\n"
@@ -143,7 +169,7 @@ def _logic_solver_check(prompt: str, answer: str) -> tuple[str, str | None]:
         return "skip", None
     if assignment_matches_answer(solution, answer):
         return "agree", None
-    return "override", format_assignment(solution)
+    return "override", format_assignment(solution, prompt)
 
 
 def solve(task: dict, deadline: float) -> dict:
@@ -174,6 +200,15 @@ def solve(task: dict, deadline: float) -> dict:
             if (verdict == "pass" and category == "sentiment_classification"
                     and time_left > 90 and not _sentiment_label_agrees(prompt, answer)):
                 verdict = "fail"  # second constrained read disagrees on the label
+            if (verdict == "pass" and category in ("code_generation", "code_debugging")
+                    and time_left > 90):
+                code = extract_python_code(answer)
+                # a script-only "doesn't crash" pass can't see a wrong-but-
+                # non-crashing bug (VERDICTS V21) -- a real assertion
+                # disagreement demotes the verdict; no usable assertion
+                # (None) leaves today's script-only pass untouched
+                if code is not None and _code_assertion_check(prompt, code) is False:
+                    verdict = "fail"
             if verdict == "pass":
                 route = "local"
             elif verdict == "unknown" and time_left > 90:

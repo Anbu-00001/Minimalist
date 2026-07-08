@@ -490,3 +490,43 @@ Verified from the updated Participant Guide (downloaded, primary source):
 - Consequence for V9: the GPU model matrix pivots from 4B+ candidates to
   2-3B (with the 4B kept only if the constrained-Docker test proves it
   fits both RAM and the 10-minute budget at 2 threads).
+
+## V21. Code verifier only proved "doesn't crash as a script", not "logic is
+## correct" — fixed with spec-derived assertions (2026-07-09)
+
+Found by the `certificate_carrying_answers` research agent, independently
+confirmed by direct code read + unit test before shipping. `verify()`'s code
+branch (`agent/verifiers.py`) extracted the candidate function and ran it via
+`_run_python`, which executes the block **as a standalone script**. Almost
+every real candidate answer is a bare `def f(...): ...` with no call site —
+running that as a script defines the function and exits 0 regardless of
+whether the body is correct. Confirmed with the canonical bug
+(`def get_max(nums): return nums[0]`, from `test_io/practice_tasks.json`
+practice-06's own prompt): the old check returned `True` (pass) for it,
+since indexing a non-empty list never raises. A pure "does it crash"
+fuzz check (the research's other option, Hypothesis `fuzz()`) would have
+missed this exact bug too, for the same reason, on most inputs — crash-only
+checking can't see a wrong-but-non-crashing return value.
+
+Fix: `verifiers.run_with_assertions` splices the candidate with a few
+example-based `assert` statements and actually executes the call.
+`router._code_assertion_check` generates those assertions from the local
+model, shown **only the task's natural-language spec, never the candidate
+code** (avoids the same misreading leaking into both the answer and its own
+check — an open risk the CRITIC-pattern research flagged and had no prior
+art ruling in or out, so kept as the cheap mitigation). Wired as a
+post-verdict demotion in `router.solve()`, same shape as sentiment's second
+constrained read: a `verify()` "pass" only gets demoted to "fail" on a real
+assertion disagreement; no usable assertion parses out → `None` → today's
+script-only pass stands, so this can only add rigor, never regress below
+the current floor. Gated on `time_left > 90` like the other post-verdict
+checks. Zero new dependencies (pure `ast`/`subprocess`, no Hypothesis).
+
+Live-verified: old check passes the buggy `get_max`, new check fails it
+(`assert get_max([3,1,4,1,5,9,2,6]) == 9`), correct code still passes,
+no-usable-assertion case returns `None` not `False`.
+
+**Caveat for the full-228 benchmark started before this fix landed**: that
+run's code_generation/code_debugging numbers reflect the old, weaker
+script-only check and are likely optimistic for those two categories only —
+worth a targeted re-check, not necessarily a full re-run.
