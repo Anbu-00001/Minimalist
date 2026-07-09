@@ -1,0 +1,86 @@
+Full 228-task benchmark, 2026-07-09. Local model: Qwen3-4B-Instruct-2507 Q4_K_M
+(GPU pod, -ngl 99, -c 8192 -- GPU speed only, NOT representative of the 2vCPU
+grading env; see VERDICTS V20 for that). Remote: real Cerebras calls
+(gemma-4-31b stand-in for Fireworks), throttled to 5 RPM via REMOTE_RPM_LIMIT.
+Router code state: AFTER the router.py timeout/fallback fixes (last-resort
+retry capped to category token budget, math bare-answer fallback), BEFORE
+V21 (code assertion check) and V22 (solver label-vocabulary fix) landed --
+those two were found and fixed while reviewing THIS run's own results, so
+their effect is not reflected in these numbers. See VERDICTS.md V21/V22.
+
+=== eval/results_dev.json -- 228 tasks ===
+strict score : 118/228 = 52%  (fail 38, unsure 72)
+ceiling (pass+unsure): 83%
+
+category                      pass  fail  unsure   strict
+code_debugging                   1     0      26      4%
+code_generation                  0     0      23      0%
+factual_knowledge               19     2       7     68%
+logical_reasoning               21    10       6     57%
+mathematical_reasoning          26    10       0     72%
+named_entity_recognition        15     8       3     58%
+sentiment_classification        20     4       0     83%
+text_summarisation              16     4       7     59%
+
+route                         pass  fail  unsure
+fallback                        21    15       8
+local                           20     3      37
+local+consistent                47    11      25
+local+program                   25     3       0
+solver                           5     6       2
+
+IMPORTANT CAVEATS (read before trusting the raw numbers above):
+
+1. code_generation/code_debugging show 0%/4% strict, 100%/96% "unsure" --
+   this is NOT a real capability gap. eval/judge.py's _judge_code always
+   returns "unsure, semantics unchecked" for any code that merely parses --
+   the independent judge has no gold test cases to check actual correctness
+   against, by design. This number cannot move without a fundamentally
+   different judging methodology (see research/certificate_carrying_answers.md
+   for what that might look like -- property tests, spec-derived assertions).
+   The agent-side V21 fix improves what ships as "pass" internally, but this
+   harness structurally cannot show that improvement as a score delta.
+
+2. logical_reasoning's 57% strict / solver route's 5-pass-6-fail is
+   ARTIFICIALLY LOW, for TWO independent, now-fixed reasons (VERDICTS V22,
+   all three rounds):
+   (a) agent/verifiers.py::format_assignment hardcoded "Position N" instead
+       of the puzzle's own label vocabulary (day names/ordinals/"Seat N") --
+       every one of the original 8 non-pass "solver" tasks had the exactly
+       correct assignment, wrong only in label wording.
+   (b) eval/judge.py's own _judge_short_text diluted the overlap score for
+       9/37 gemini-sourced gold answers that append a "Justification: ..."
+       paragraph the agent was never asked to reproduce -- a judge bug, not
+       an agent bug, that persisted even after (a) was fixed.
+   With BOTH fixed: re-judging the same (already fixed) round-2 answers
+   (research/benchmark_2026-07-09/recheck_logical_reasoning_v2.json) gives
+   logical_reasoning 28/37 = 76% strict, solver route 12/13 pass (92%),
+   up from 57% / 5-13. Re-judging the ORIGINAL full-228 answers (pre-V22,
+   judge-fix only) moves logical_reasoning from 57% to just 59% -- most of
+   the gain needed the actual V22 answer-format fix, not just the judge fix
+   alone. See VERDICTS.md V22 for the full three-round trace. Remaining 4
+   fails in the recheck are grok-sourced gold answers that are themselves
+   non-specific placeholders ("Specific arrangement satisfying all
+   constraints.") -- a dev-set data quality issue, not agent or judge.
+
+3. This was run on a GPU pod at full speed (-ngl 99), not the 2vCPU/4GB
+   grading constraint. Wall-clock/route-mix here should not be read as
+   "how fast this would run in the real grading container" -- that's a
+   separate, already-answered question (VERDICTS V20, constrained-Docker
+   tests). This benchmark's purpose was accuracy/logic validation only.
+
+4. Remote escalations went through Cerebras (gemma-4-31b), a stand-in for
+   the real Fireworks-hosted models named in ALLOWED_MODELS. Directionally
+   informative for whether the escalation/verification architecture works,
+   not a prediction of real-Fireworks-model accuracy.
+
+UPDATE 2026-07-09 (second audit pass — see VERDICTS V24):
+- 7 grok math golds in this run were WRONG (recomputed independently);
+  full_228_results_goldfixed.json carries the corrected golds.
+  Re-judged: strict 52% -> 54%, ceiling 83% -> 87%, math 72% -> 83%,
+  local+program route 28 pass / 0 fail (perfect record).
+- The 6 chat-paste-truncated prompts were repaired in merged.json; their
+  scores here are still artifacts (answers responded to broken prompts) and
+  only a fresh run can measure them.
+- Judge now caps open-list questions at "unsure" instead of "fail"
+  (overlap-vs-one-gold can't distinguish wrong from valid-alternative).

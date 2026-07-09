@@ -277,8 +277,17 @@ def _judge_ner(t: dict) -> tuple[str, str]:
 
 def _judge_short_text(t: dict) -> tuple[str, str]:
     """factual_knowledge / logical_reasoning: exact for short golds,
-    keyword overlap for long ones."""
-    gold, ans = t["gold_answer"].strip(), t["answer"]
+    keyword overlap for long ones.
+
+    Some gold answers (the gemini-sourced logical_reasoning batch, 9/37 —
+    confirmed via VERDICTS V22 round 2) append a "Justification: ..."
+    reasoning paragraph the task never asked the agent to reproduce. Left
+    in, it dilutes _overlap()'s denominator (fraction of GOLD's words found
+    in the answer) so a terse, exactly-correct structured answer scores
+    ~15% instead of ~100% -- a judge-measurement bug, not an agent one.
+    Stripped before comparison; a no-op for the other 28 tasks, which never
+    contain this literal marker."""
+    gold, ans = t["gold_answer"].split("Justification:")[0].strip(), t["answer"]
     viol = _format_violation(t["prompt"], ans) if t.get("prompt") else None
     if viol:
         return "fail", viol
@@ -293,6 +302,21 @@ def _judge_short_text(t: dict) -> tuple[str, str]:
     if ov >= 0.55:
         return "pass", f"keyword overlap {ov:.0%}"
     if ov <= 0.20:
+        # open-list questions ("List three key inventions...") admit many
+        # valid answers besides the one gold names — overlap-vs-one-gold
+        # cannot distinguish a wrong answer from a correct alternative
+        # (V23 audit: agent's Steam Engine/Spinning Jenny/Power Loom failed
+        # against a gold naming a different valid triple). If the prompt
+        # asks for an open list and the answer supplies enough items,
+        # semantics are simply uncheckable here: unsure, not fail.
+        m = re.search(r"\b(?:list|name|give|provide)\b.{0,30}?\b"
+                      r"(one|two|three|four|five|\d+)\b", t.get("prompt", "").lower())
+        if m:
+            n = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}.get(
+                m.group(1), int(m.group(1)) if m.group(1).isdigit() else 0)
+            items = len(re.findall(r"(?:^|\n)\s*(?:\d+[.)]|[-*•])\s+\S", ans))
+            if n and items >= n:
+                return "unsure", f"open-list: {items} items supplied, overlap {ov:.0%} vs one gold variant"
         return "fail", f"keyword overlap {ov:.0%}"
     return "unsure", f"keyword overlap {ov:.0%}"
 

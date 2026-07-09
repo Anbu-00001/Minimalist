@@ -25,7 +25,7 @@ PROMPT_HINTS = {
     "code_debugging": "\n\nIdentify the bug in one sentence, then give the full corrected code in a fenced block.",
     "code_generation": "\n\nReturn the complete function in a fenced code block.",
     "sentiment_classification": "\n\nState the sentiment label first, then a one-sentence justification.",
-    "named_entity_recognition": "\n\nList each entity with its type. Use the exact format the task asks for.",
+    "named_entity_recognition": "\n\nList each entity with its type, each entity under exactly one type. Cities, countries, and regions are LOCATION, never ORGANIZATION. Use the exact format the task asks for.",
 }
 
 
@@ -129,7 +129,12 @@ def _code_assertion_check(prompt: str, code: str) -> bool | None:
         max_tokens=160, system=SYSTEM)
     if not reply:
         return None
-    assertions = [l for l in reply.splitlines() if l.strip().startswith("assert ")]
+    # only asserts that actually CALL the candidate's function can judge it;
+    # an assert against some other name raises NameError at runtime, which
+    # would read as a failure and falsely demote a correct answer (V23 audit)
+    assertions = [l for l in reply.splitlines()
+                  if l.strip().startswith("assert ")
+                  and re.search(rf"\b{re.escape(name)}\s*\(", l)]
     return run_with_assertions(code, assertions)
 
 

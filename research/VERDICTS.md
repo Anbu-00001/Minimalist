@@ -529,4 +529,241 @@ no-usable-assertion case returns `None` not `False`.
 **Caveat for the full-228 benchmark started before this fix landed**: that
 run's code_generation/code_debugging numbers reflect the old, weaker
 script-only check and are likely optimistic for those two categories only —
-worth a targeted re-check, not necessarily a full re-run.
+worth a targeted re-check, not necessarily a full re-run. (Superseded by the
+finding below: `eval/judge.py`'s own `_judge_code` returns "unsure, semantics
+unchecked" for all parseable code regardless of agent-side verification, so
+the dev harness can't actually surface V21's effect numerically — a targeted
+re-check wouldn't show a clear before/after signal. V21 stands on its unit
+test, not on a benchmark delta.)
+
+## V22. The 228-task benchmark surfaced a bigger, real bug: solver answers
+## were graded wrong for label wording, not substance (2026-07-09)
+
+The full run gave `logical_reasoning` a 57% strict score and the `solver`
+route (V15's CSP override) only 5 pass / 6 fail / 2 unsure — worse than the
+earlier small live tests suggested. Read the actual failing pairs before
+accepting that number: **every one of the 8 non-pass "solver" tasks had the
+exact correct person/item-to-position assignment** — the CSP solver's
+substance was 100% right. The only difference from gold was label
+vocabulary: `format_assignment` hardcoded `"Position N: Name"`, but gold
+answers use whatever wording the puzzle itself established — day names
+("Monday: Sarah"), ordinals ("1st: Drew"), or bare numbers ("1: Yellow").
+"Position N" matched **zero** of the 8 gold answers verbatim.
+
+This means V15's real solving accuracy on this dev set is far higher than
+57% suggests — the measured number was mostly a formatting artifact, not a
+reasoning failure. Given `logical_reasoning` was flagged as the project's
+single weakest category as far back as V13, this was likely suppressing our
+best-fixed category's real score the whole time.
+
+Fix: `verifiers._position_labels(prompt, n)` detects the puzzle's own
+labeling scheme directly from its text — day-of-week names (in the order
+they appear, not calendar order), an ordinal pattern (`"1st"` present in the
+prompt), or bare numbers as the fallback — and `format_assignment` now takes
+`prompt` and uses whichever scheme the puzzle actually established, never a
+scheme not evidenced in the prompt itself. Verified against the three real
+failing prompts pulled from the benchmark: day-name, ordinal, and bare-number
+outputs each now match their gold answer's format exactly (not just
+approximately). `router._logic_solver_check` updated to pass `prompt`
+through; the bare-number fallback preserves the exact old output for any
+prompt where no scheme is detected, so this can only fix cases, never
+regress existing passes.
+
+**Round 2 (same day, caught by actually re-running the fix, not just unit
+tests)**: a targeted 37-task logical_reasoning-only re-check on the GPU pod
+showed the `solver` route still failing 4/13 and unsure 4/13 after V22
+"landed" — i.e. the fix was live but the number barely moved. Manual
+inspection of the fails found two vocabulary gaps the first pass's evidence
+didn't cover: (1) **"seat"** — a prompt saying "sitting in a row of five
+seats, numbered 1 to 5" has gold using "Seat 1: Ivy", which the day/ordinal/
+bare-number cases didn't anticipate; (2) **day RANGES** — "scheduled from
+Monday to Thursday" only names the two endpoint days, not all four
+individually, so the original day-detector (which required literal mentions
+of every day) undercounted and fell through to the bare-number default.
+Fixed: explicit `seat`/`seats` keyword → `"Seat N"` labels; a day-range
+regex (`"<day> to/through <day>"`) that fills in the calendar days between
+the two named endpoints (still grounded in the puzzle's own two stated
+words, not invented). Re-verified against all 5 real cases now on file
+(day-list, ordinal, bare-number, seat, day-range) — all 5 produce an exact
+match to their gold answer's format.
+
+**Round 3 — a second, independent bug, in the measuring instrument, not the
+agent**: the round-2 re-run still scored 57% strict, unchanged, even though
+the actual answer text for the "seat"/day-range cases now matched gold
+*exactly* (byte-for-byte, verified directly). Traced to `eval/judge.py`'s
+`_judge_short_text`: 9 of 37 logical_reasoning gold answers (the
+gemini-sourced batch, and only those) append a `"Justification: ..."`
+reasoning paragraph the task never asked the agent to reproduce. Left in,
+it dilutes `_overlap()`'s denominator (fraction of GOLD's words found in
+the answer) — a terse, exactly-correct structured answer scores ~15%
+instead of ~100%. Fixed by stripping everything from `"Justification:"`
+onward before comparison, a no-op for the other 28 tasks that never contain
+that literal marker (confirmed by direct count before shipping the fix, not
+assumed). Dev-tool-only change (`eval/judge.py` isn't shipped in the
+container), no image rebuild needed.
+
+**Final, trustworthy number**: re-judging the same round-2 answers (no
+re-run needed — the answers were already correct, only the scoring was
+wrong) gives logical_reasoning **28/37 = 76% strict** (up from the original
+57%), and the `solver` route specifically **12 pass / 0 fail / 1 unsure**
+(92%), up from 5/13. The 4 remaining fails are a different, real issue:
+grok-sourced gold answers that are themselves non-specific placeholders
+("Specific arrangement satisfying all constraints.", not an actual named
+solution) — a dev-set data quality problem, not an agent or judge bug, and
+out of scope to fix under the current deadline.
+
+**Takeaway for how this project should read its own numbers going forward**:
+three rounds of "found a bug, fixed it, re-ran, found the real number was
+still wrong for a *different* reason" on a single category. The lesson
+isn't "logical_reasoning is fixed now" (grok placeholders remain, and other
+categories haven't had this level of scrutiny) — it's that a single
+benchmark run's raw numbers should not be trusted without reading actual
+failing examples, because both the agent AND the measuring instrument can
+be wrong independently, and a low score can hide a working mechanism behind
+an unrelated formatting/scoring bug.
+
+## V23. Fable audit of the 228-run + this session's fixes (2026-07-09)
+
+Full independent re-read of V21/V22 code, the judged results, and the gold
+data. Findings, each verified directly against the files:
+
+1. **V22 latent bug found and fixed**: `_position_labels` ordered day labels
+   by FIRST MENTION in the prompt. All 5 on-file cases passed only because
+   their day enumerations happen to precede any constraint text; a puzzle
+   whose constraints mention a day early ("Kevin cannot present on
+   Wednesday. Four colleagues present... Monday, Tuesday, Wednesday,
+   Thursday") would scramble the position→day mapping. Positions 1..n
+   encode earliest→latest, so calendar order is the only correct order —
+   and since `_DAYS` is iterated in calendar order, the fix was DELETING
+   the mention-order sort. Verified on all 5 prior cases + the adversarial
+   one (6/6 exact match). Also fixes the red-herring-day case (5 days
+   mentioned, 4 positions: calendar order keeps Mon–Thu, mention order
+   could keep the red herring and drop a real day).
+2. **Six dev tasks are corrupted at the data level** — their prompts
+   announce a payload that was lost in the original chat-paste
+   (chatgpt_text_summarisation easy_1/med_1/med_2/hard_1 end at "...in one
+   sentence:"; chatgpt_named_entity_recognition easy_1/hard_1 end at
+   "...following sentence:"). The agent's "The passage is not provided."
+   is the CORRECT response to these; gold expects a summary of the missing
+   passage. This accounts for 3-4 of summarisation's 4 judged fails and 2
+   of NER's 8. Corrected real picture: summarisation ≈1 real fail (fine),
+   NER's real weakness is 3-6 entity-TYPE confusions (e.g. Geneva/São
+   Paulo/Dublin listed under ORGS — a precision error, possibly worth one
+   prompt-hint line, nothing more).
+3. **factual_knowledge's 2 "fails" are judge-too-narrow, not wrong
+   answers**: haiku_medium_2 answered Steam Engine/Spinning Jenny/Power
+   Loom with correct dates — a fully valid answer to "list three key
+   inventions" — but gold names a different valid triple, and keyword
+   overlap can't credit alternatives. Open-list questions structurally
+   can't be graded by overlap-vs-one-gold; the real LLM judge may well
+   accept these. No agent action available or needed.
+4. **mathematical_reasoning's 10 fails are the one REAL capability gap**:
+   all are wrong numbers on the grok hard tail (got 132 vs 135, 5372 vs
+   5768...) — multi-step problems where local+remote+program-check all
+   land wrong or unverifiable. This matches zero_token_championship.md's
+   prediction that the hard math tail is a genuine 4B ceiling.
+   **[CORRECTED same day — see V24. This claim was wrong: I compared
+   got-vs-gold without recomputing the golds. 6-7 of the 10 golds were
+   themselves wrong or the task incoherent; only 3 fails were real, and
+   all 3 shipped via the fallback route (rate-limited dev stand-in), not
+   through failed verification.]**
+5. **V21 audit**: sound as shipped (demotion-only, tri-state None, spec-not-
+   code independence). One unmeasured risk flagged, deliberately NOT built:
+   a wrong generated assertion falsely demotes a correct local pass →
+   unnecessary escalation (bounded: costs tokens, not accuracy). Measure
+   post-submission if scored tokens look high; a ≥2-asserts-fail demotion
+   threshold is the ready mitigation. Not touched now — no data, and no
+   new code 2 days before deadline without measurement to justify it.
+6. **Throttle/fallback/judge-fix audits**: REMOTE_RPM_LIMIT defaults None
+   (unset in grading -- dev-only, correct); last-resort `cap` is always
+   defined on every path that reaches it; the "Justification:" strip
+   cannot fire on any other category (marker counted across all 228 golds:
+   logical_reasoning only). No other category shows the V22-round-3
+   dilution shape.
+
+**Corrected best-estimate dev accuracy after removing measurement/data
+artifacts**: strict ~52% raw → real ≈65-70%, with the only structural gaps
+being the hard-math tail and NER type-precision. Code categories remain
+unmeasurable by the deterministic judge (V21 caveat) — they stand on the
+practice-task container runs (7/8, 6/8).
+
+## V24. Second-pass audit: the math "capability gap" was mostly wrong golds;
+## dev data repaired; V21 hardened per literature (2026-07-09)
+
+Triggered by the user's "fix each bug found in the audit + check for
+hardcoding + research risky parts." Every number below was recomputed
+independently (fractions/floats in a script, printed before acting), not
+eyeballed.
+
+**The V23 math claim was wrong, and the correction flips the conclusion.**
+Recomputing all 10 failed math tasks' true answers:
+- 3 tasks: **agent RIGHT, gold WRONG** (grok_med_1_dup2: true 132, gold
+  said 135; grok_hard_1_dup3: true 5372, gold 5768; grok_hard_4: true
+  174.96, gold 178.2). All three shipped via `local+program` — the
+  program-aided check *confirmed correct answers* that wrong golds then
+  failed. V6/V16 machinery worked flawlessly.
+- 3 tasks: **both wrong, gold included** (hard_2 true 16/3≈5.33 vs gold
+  4.5; hard_6 true 5956 vs gold 8621; hard_7 true ratio 10:9 vs gold
+  17:12), and hard_8 is **mathematically incoherent** (its own rates
+  finish the job at 1.25× within the first 3 days, before C "joins";
+  gold 47/60 is unreconstructable).
+- 3 tasks: real agent fails (hard_9, synth_10, synth_12) — **all shipped
+  via `fallback`**, the route that exists only because the Cerebras dev
+  stand-in was rate-limited (5 RPM). In grading, these escalate to a real
+  remote model instead. Zero real fails passed through verification.
+
+**Dev data repaired** (data/dev_tasks/merged.json):
+- 7 grok math golds corrected to independently-recomputed values
+  (hard_8's gold set to 1 with an acceptance note explaining the
+  incoherence). grok-sourced hard math golds are now a known-unreliable
+  batch — 6 of 7 checked were wrong.
+- The 6 chat-paste-truncated prompts (V23 finding #2) reconstructed from
+  their intact golds + acceptance criteria (the payloads' required content
+  is fully determined by what the gold summarises/extracts). These 6 need
+  a fresh run to produce meaningful scores; their old recorded answers
+  responded to broken prompts.
+
+**Re-judged full-228 with corrected golds + open-list judge fix**
+(research/benchmark_2026-07-09/full_228_results_goldfixed.json):
+strict 52% → 54%, ceiling 83% → 87%. mathematical_reasoning 72% → **83%**
+(30/36), and the `local+program` route is now **28 pass / 0 fail /
+0 unsure — a perfect record**. factual_knowledge fails 2 → 1 (open-list
+questions now cap at "unsure": overlap-vs-one-gold cannot distinguish a
+wrong answer from a correct alternative). logical_reasoning still reads
+59% here because these are pre-V22 answers; its validated number is 76%
+(V22 round 3).
+
+**V21 hardened, this time with literature grounding** (user asked for
+research on risky parts): CodeT (2207.10397) works via dual agreement
+across MANY candidate solutions — unavailable with one candidate; newer
+measurements find only ~35-51% of LLM-generated tests are valid on some
+benchmarks (2602.10522), and treating generated tests as ground truth
+"risks degrading valid solutions" (2603.28653). A 4B generator is likely
+worse. So demote-on-any-single-assert was too aggressive. Changes:
+(a) asserts that don't call the candidate's own function are discarded
+up front (a foreign-name assert raises NameError and would false-demote);
+(b) `run_with_assertions` now executes each assert independently in a
+tally harness — AssertionError counts as a real value mismatch, any other
+exception means the ASSERT is broken and is discarded — and returns False
+only when failures OUTNUMBER passes; mixed signals return None (no
+demotion). All six decision branches unit-tested, including the canonical
+practice-06 bug (still caught) and a poisoned batch (no longer demotes).
+
+**Hardcode audit (competition-rule compliance): clean.** All runtime
+config is env-read (FIREWORKS_*, ALLOWED_MODELS, paths, budgets); no
+task-specific strings, names, or answers anywhere in agent/ (grepped);
+no dev/test data COPYd into the image (Dockerfile: requirements, llama
+binaries, models/, agent/, entrypoint only); REMOTE_PREFERENCE hardcodes
+only the *ordering* of model IDs and every call is still gated by the
+env-provided ALLOWED_MODELS list with a fallback to whatever the env
+lists (guide requires reading ALLOWED_MODELS at runtime — we do).
+`_position_labels`' seat/day/ordinal detection keys on prompt vocabulary,
+not on any specific task. Nothing to resolve.
+
+**Standing state after this pass**: image rebuilt with all fixes
+(V22-day-order, V21-tally, NER type-precision hint). The GPU pod is gone
+(proxy now serves a self-signed cert — instance ended). A fresh full-228
+on the laptop (~30-40 min, llama-server local) is the remaining
+measurement item; the corrupted-task repairs and gold fixes only pay off
+in that re-run. It is NOT a submission blocker — practice-task container
+runs remain the shipping gate.

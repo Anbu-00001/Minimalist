@@ -256,12 +256,31 @@ def _position_labels(prompt: str, n: int) -> list[str]:
     how positions were labeled). Falls back to bare numbers, never invents
     a labeling scheme not evidenced in the prompt itself."""
     lower = prompt.lower()
+
+    # every day individually named -- ordered by CALENDAR, not first mention:
+    # the solver's positions 1..n encode earliest-to-latest, and a constraint
+    # like "not on Wednesday" can mention a day before the enumeration does,
+    # which would scramble a mention-ordered mapping (2026-07-09 audit)
     found_days = [d for d in _DAYS if re.search(rf"\b{d}\b", lower)]
     if len(found_days) >= n:
-        found_days.sort(key=lambda d: lower.find(d))
         return [d.capitalize() for d in found_days[:n]]
+
+    # a day RANGE ("scheduled from Monday to Thursday") only names the two
+    # endpoints -- the days between are implied by calendar order, not
+    # invented: still grounded in the puzzle's own two stated day names
+    m = re.search(r"\b(" + "|".join(_DAYS) + r")\b.{0,15}?\b(?:to|through)\b"
+                  r".{0,15}?\b(" + "|".join(_DAYS) + r")\b", lower)
+    if m:
+        start, end = _DAYS.index(m.group(1)), _DAYS.index(m.group(2))
+        if 0 <= end - start == n - 1:
+            return [d.capitalize() for d in _DAYS[start:end + 1]]
+
+    if re.search(r"\bseats?\b", lower):
+        return [f"Seat {i}" for i in range(1, n + 1)]
+
     if re.search(r"\b1st\b", lower):
         return [_ordinal(i) for i in range(1, n + 1)]
+
     return [str(i) for i in range(1, n + 1)]
 
 
@@ -350,12 +369,21 @@ def primary_function_name(code: str) -> str | None:
 
 
 def run_with_assertions(code: str, assertions: list[str], timeout: float = 5.0) -> bool | None:
-    """Splice candidate code with example-based assert statements and execute
-    them together -- this actually exercises the function's return values,
-    not just whether the module body raises. `assertions` is filtered to
-    syntactically-valid `assert ...` lines; None (not False) if none survive,
-    so a caller never turns "the checker couldn't produce a usable assertion"
-    into a false "fail"."""
+    """Splice candidate code with example-based assert statements and actually
+    execute the calls -- this exercises the function's return values, not just
+    whether the module body raises.
+
+    Model-generated asserts are themselves unreliable (CodeT-line literature:
+    only ~35-51% of LLM-generated tests are valid on some benchmarks, and
+    treating them as ground truth degrades valid solutions), so each assert
+    is executed independently and tallied rather than run as one fatal block:
+      - AssertionError        -> counted as a failure (a real value mismatch)
+      - any other exception   -> the ASSERT is broken (wrong name/arity/type),
+                                 discarded entirely, never held against the code
+    Verdict: True when asserts pass and none fail; False only when failures
+    outnumber passes (a lone dissenter among passing asserts is more likely a
+    wrong assert than wrong code); None when nothing usable executed or the
+    signal is mixed -- callers must never read None as disagreement."""
     valid = []
     for line in assertions:
         line = line.strip()
@@ -368,4 +396,39 @@ def run_with_assertions(code: str, assertions: list[str], timeout: float = 5.0) 
         valid.append(line)
     if not valid:
         return None
-    return _run_python(code + "\n\n" + "\n".join(valid), timeout=timeout)
+    tally = ["_p = _f = 0"]
+    for a in valid:
+        tally += ["try:",
+                  f"    {a}",
+                  "    _p += 1",
+                  "except AssertionError:",
+                  "    _f += 1",
+                  "except Exception:",
+                  "    pass"]
+    tally.append("print(_p, _f)")
+    out = _run_python_output(code + "\n\n" + "\n".join(tally), timeout=timeout)
+    if out is None:
+        return None
+    try:
+        passed, failed = map(int, out.split())
+    except ValueError:
+        return None
+    if failed == 0 and passed > 0:
+        return True
+    if failed > passed:
+        return False
+    return None
+
+
+def _run_python_output(code: str, timeout: float = 5.0) -> str | None:
+    """Like _run_python but returns the script's stdout (stripped), or None
+    on non-zero exit/timeout."""
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+        f.write(code)
+        path = f.name
+    try:
+        r = subprocess.run([sys.executable, path], capture_output=True,
+                           text=True, timeout=timeout)
+        return r.stdout.strip() if r.returncode == 0 else None
+    except Exception:
+        return None

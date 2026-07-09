@@ -7,18 +7,24 @@ import re
 # recognised from incidental vocabulary — a tweet about buggy software is
 # still a sentiment task.
 _RULES: list[tuple[str, list[str]]] = [
-    ("sentiment_classification", ["sentiment", "positive", "negative", "neutral", "tone of the review"]),
+    ("sentiment_classification", ["sentiment", "positive", "negative", "neutral", "tone of the review",
+                                  "feel about", "opinion of", "favorable", "unfavorable"]),
     ("named_entity_recognition", ["entities", "entity", "person, org", "person names", "organization",
-                                  "label the", "extract"]),
-    ("text_summarisation", ["summarise", "summarize", "summary", "condense", "in one sentence", "tl;dr"]),
-    ("code_debugging", ["bug", "debug", "fix the", "error in", "incorrect code", "faulty", "fails"]),
+                                  "label the", "extract", "proper noun", "pull out"]),
+    ("text_summarisation", ["summarise", "summarize", "summary", "condense", "in one sentence", "tl;dr",
+                            "gist", "key points", "main takeaways", "boil down", "recap", "distill"]),
+    ("code_debugging", ["bug", "debug", "fix the", "error in", "incorrect code", "faulty", "fails",
+                        "isn't working", "doesn't work", "not working", "unexpected behavior",
+                        "diagnose", "repair", "correct it", "the issue"]),
     ("code_generation", ["write a function", "a function", "implement", "def ", "function that",
-                         "return a function", "signature", "javascript", "write a program"]),
+                         "return a function", "signature", "javascript", "write a program",
+                         "python script", "algorithm to", "utility", "code that", "code up"]),
     ("mathematical_reasoning", ["calculate", "how many", "how much", "percent", "%", "total cost",
                                 "compute the", "average speed", " km", "how far", "fraction",
-                                "per day", "per hour"]),
+                                "per day", "per hour", "times as many", "split evenly", "what does each"]),
     ("logical_reasoning", ["puzzle", "seated", "who is", "truth", "liar", "constraint", "order of",
-                           "schedule", "clue", "sitting", "sits ", "does it follow", "who sits"]),
+                           "schedule", "clue", "sitting", "sits ", "does it follow", "who sits",
+                           "statements", "restrictions"]),
     ("factual_knowledge", ["what is", "explain", "define", "how does", "why does", "describe"]),
 ]
 
@@ -31,7 +37,10 @@ def classify(prompt: str) -> str:
     for cat, kws in _RULES:
         scores[cat] = sum(1 for kw in kws if kw in p)
     if has_code_block:
-        scores["code_debugging"] += 2 if any(w in p for w in ("bug", "fix", "wrong", "error")) else 0
+        scores["code_debugging"] += 2 if any(w in p for w in (
+            "bug", "fix", "wrong", "error", "isn't working", "doesn't work",
+            "not working", "unexpected behavior", "diagnose", "repair",
+            "correct it", "the issue")) else 0
         scores["code_generation"] += 1
     best = max(scores, key=lambda c: scores[c])
     return best if scores[best] > 0 else "factual_knowledge"
