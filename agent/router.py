@@ -108,7 +108,16 @@ def _math_program_check(prompt: str, answer: str) -> bool | None:
     value = run_expression(expr)
     if value is None:
         return None
-    return numbers_agree(stated, value)
+    if numbers_agree(stated, value):
+        return True
+    # "15%" stated while the program computed 0.15 (or the reverse) is the
+    # same commitment in different units — but only when percent context is
+    # actually present, so a stray x100 coincidence (cents-vs-dollars class
+    # of error) can never bless a genuinely wrong answer
+    if "%" in answer or "percent" in prompt.lower():
+        if numbers_agree(stated, value * 100) or numbers_agree(stated * 100, value):
+            return True
+    return False
 
 
 def _code_assertion_check(prompt: str, code: str) -> bool | None:

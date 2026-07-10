@@ -100,8 +100,15 @@ def extract_final_number(text: str) -> float | None:
         return out
 
     m = re.search(r"ANSWER\s*[:=]\s*(.+)", text, re.IGNORECASE)
-    if m and nums(m.group(1)):
-        return nums(m.group(1))[-1]
+    if m:
+        # a bare fraction on the ANSWER line is one committed value, not two
+        # ("ANSWER: 3/4" must read 0.75, never 4.0)
+        f = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*\.?\s*",
+                         m.group(1))
+        if f and float(f.group(2)) != 0:
+            return float(f.group(1)) / float(f.group(2))
+        if nums(m.group(1)):
+            return nums(m.group(1))[-1]
     for line in reversed([l for l in text.splitlines() if re.search(r"\d", l)][-3:]):
         if nums(line):
             return nums(line)[-1]
