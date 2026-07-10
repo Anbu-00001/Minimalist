@@ -10,12 +10,12 @@ import time
 
 from . import config, grammars, local_llm, remote
 from .classify import classify
-from .verifiers import (SENTIMENT_LABELS, assignment_matches_answer,
-                        extract_expression, extract_final_number,
-                        extract_python_code, format_assignment, numbers_agree,
+from .verifiers import (assignment_matches_answer, extract_expression,
+                        extract_final_number, extract_python_code,
+                        format_assignment, numbers_agree,
                         parse_logic_translation, primary_function_name,
                         run_expression, run_with_assertions, solve_logic_csp,
-                        verify)
+                        stated_sentiment_label, verify)
 
 SYSTEM = "You are a precise assistant. Answer correctly and concisely. No preamble."
 
@@ -71,24 +71,10 @@ def _self_consistent(prompt: str, first: str) -> bool:
     return overlap > 0.6
 
 
-def _stated_sentiment_label(answer: str) -> str | None:
-    """An explicit 'label: X' statement wins outright. Otherwise, the
-    earliest-occurring label word — NOT SENTIMENT_LABELS' fixed tuple order,
-    which finds "positive" inside a "mixed" answer's own justification
-    ("...positive aspects...negative aspects...") before ever considering
-    the word "mixed" that was actually declared (research/benchmark_run_2026-07-07.md)."""
-    a = answer.lower()
-    m = re.search(r"(?:label|sentiment|overall)\s*[:=]?\s*(positive|negative|neutral|mixed)", a)
-    if m:
-        return m.group(1)
-    hits = [(a.find(l), l) for l in SENTIMENT_LABELS if l in a]
-    return min(hits)[1] if hits else None
-
-
 def _sentiment_label_agrees(prompt: str, answer: str) -> bool:
     """Exact-label agreement between the shipped answer and a second,
     grammar-constrained read (free local tokens buy real confidence)."""
-    stated = _stated_sentiment_label(answer)
+    stated = stated_sentiment_label(answer)
     if stated is None:
         return False
     second = local_llm.complete(

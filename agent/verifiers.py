@@ -14,6 +14,20 @@ import textwrap
 SENTIMENT_LABELS = {"positive", "negative", "neutral", "mixed"}
 
 
+def stated_sentiment_label(answer: str) -> str | None:
+    """An explicit 'label: X' statement wins outright. Otherwise, the
+    earliest-occurring label word — NOT set-iteration order, which finds
+    "positive" inside a "mixed" answer's own justification ("...positive
+    aspects...negative aspects...") before the word "mixed" that was
+    actually declared (research/benchmark_run_2026-07-07.md)."""
+    a = answer.lower()
+    m = re.search(r"(?:label|sentiment|overall)\s*[:=]?\s*(positive|negative|neutral|mixed)", a)
+    if m:
+        return m.group(1)
+    hits = [(a.find(l), l) for l in SENTIMENT_LABELS if l in a]
+    return min(hits)[1] if hits else None
+
+
 def _substantive(cand: str, tree: ast.Module) -> bool:
     """Stray fragments of prose or other languages can parse as Python
     (`max = arr[i];` is a line of JavaScript that does) — real code-task
@@ -319,7 +333,17 @@ def verify(category: str, prompt: str, answer: str) -> str:
         return "fail"  # a code task answered with no code at all
 
     if category == "sentiment_classification":
-        return "pass" if any(lbl in a.lower() for lbl in SENTIMENT_LABELS) else "fail"
+        stated = stated_sentiment_label(a)
+        if stated is None:
+            return "fail"
+        # a prompt that offers a closed label set makes any answer outside
+        # that set wrong even when it's a valid sentiment word — "mixed"
+        # for a positive/negative/neutral task fails the judge regardless
+        # of how defensible it reads (generalization guard, 2026-07-10)
+        offered = {l for l in SENTIMENT_LABELS if l in prompt.lower()}
+        if offered and stated not in offered:
+            return "fail"
+        return "pass"
 
     if category == "text_summarisation":
         limit = _word_limit_from_prompt(prompt)
