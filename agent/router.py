@@ -45,7 +45,7 @@ REMOTE_FIRST = {"factual_knowledge", "named_entity_recognition"}
 
 # per-category nudge for the remote call itself; kept to one short sentence
 REMOTE_HINTS = {
-    "named_entity_recognition": " Cities, countries, and regions are LOCATION, never ORGANIZATION.",
+    "named_entity_recognition": " List every entity, including dates and times. Cities, countries, and regions are LOCATION, never ORGANIZATION.",
 }
 
 
