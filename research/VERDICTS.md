@@ -767,3 +767,47 @@ on the laptop (~30-40 min, llama-server local) is the remaining
 measurement item; the corrupted-task repairs and gold fixes only pay off
 in that re-run. It is NOT a submission blocker — practice-task container
 runs remain the shipping gate.
+
+## V25. First real leaderboard score: 15/19 (78.9%) — the gate forensics were
+right, and the miss lived exactly where dev data said it would (2026-07-10)
+
+The submitted image (all V21-V24 fixes included) scored ACCURACY_GATE_FAILED
+at 78.9% — exactly 15/19 against the 16/19 (84.21%) gate that
+leaderboard_gate_forensics.md predicted from k/19 quantization of 79 public
+scores. Every qualifying entry visible that night sat at 84.2%, 89.5%, or
+100.0% — all k/19 values. Treat the 19-item/16-pass model as confirmed.
+
+**Response shipped the same night (commits 3724d6b, 574892a):**
+
+1. **Remote-first factual_knowledge + named_entity_recognition.** Both
+   categories have no deterministic verifier and were shipping on the
+   self-consistency probe — dev strict 57% on the local+consistent route,
+   vs ~100% (program-checked math) and 92% (solver logic). A consistent
+   4B is still a 4B on world knowledge and entity typing. Their prompts
+   are short (low scored-input cost) so the remote upgrade is cheap;
+   qualifiers spend 1.8k-5.4k tokens, we project ~0.5-1k post-tilt.
+2. **NER remote completeness hint.** Caught live in the tilt smoke test:
+   the remote answer dropped "last March: DATE" that the local answer had
+   included — REMOTE_SUFFIX's "concisely" encouraged omission. One-line
+   hint ("List every entity, including dates and times. Cities, countries,
+   and regions are LOCATION, never ORGANIZATION.") fixed it: micro-test
+   returned all 4 entities at 83in/19out tokens.
+3. **factual REMOTE_MAX_TOKENS 160 -> 256.** All factual answers are now
+   remote; a truncated "explain/describe" answer judges as wrong, and an
+   unused cap costs nothing.
+4. **Sentiment offered-label-set guard (verifiers.verify).** A prompt that
+   offers a closed label set ("positive, negative, or neutral") makes any
+   answer outside that set wrong by construction — our smoke-test "Mixed"
+   answer is the exact failure shape. Deterministic, free, escalation-only.
+   Unit-tested (6 cases) + container micro-test: closed-set prompt escalated
+   and shipped "Neutral" (2 output tokens); open prompt kept local "Mixed".
+   stated_sentiment_label moved to verifiers.py (shared with router).
+
+**Organizer clarifications (Discord, 2026-07-10)** that shaped the response:
+final rankings re-run on REFRESHED randomized prompts (so fixes must
+generalize, not overfit the current 19); local-only/0-token is explicitly
+legitimate; non-Fireworks routing gets manually audited and DQ'd during
+judging; equal-token tie-breaks TBD. See research/win_conditions.md,
+research/top5_forensics.md (rank-1's 0-token/100% is code-verified
+non-Fireworks Gemini routing — the exact DQ pattern), and
+research/tilt_ab_measurement.md (empirical A/B of the tilt, in progress).
