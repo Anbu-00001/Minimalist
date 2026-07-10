@@ -32,6 +32,22 @@ PROMPT_HINTS = {
 # kept lean on purpose: remote input tokens are scored too (VERDICTS V3)
 REMOTE_SUFFIX = "\n\nAnswer directly and concisely. Do not show reasoning."
 
+# Accuracy-first tilt (leaderboard 2026-07-10: 15/19, gate needs 16/19).
+# These categories have no deterministic verifier — they shipped on the
+# self-consistency probe, our weakest signal (57% strict on dev, vs ~100%
+# for program-checked math and 92% for solver-checked logic). A consistent
+# 4B is still a 4B on world knowledge and entity typing; qualifiers spend
+# 1.8k-5.4k tokens, so buying remote accuracy here is cheap. Both prompts
+# are short (low scored input cost) — unlike summarisation, whose long
+# passages would bill heavily and whose dev fails were mostly judge/data
+# artifacts, so it stays local.
+REMOTE_FIRST = {"factual_knowledge", "named_entity_recognition"}
+
+# per-category nudge for the remote call itself; kept to one short sentence
+REMOTE_HINTS = {
+    "named_entity_recognition": " Cities, countries, and regions are LOCATION, never ORGANIZATION.",
+}
+
 
 def pick_models(category: str) -> list[str]:
     """Primary + one fallback (used on timeout/verification failure); a third
@@ -187,7 +203,7 @@ def solve(task: dict, deadline: float) -> dict:
 
     answer, route = None, "none"
 
-    if local_llm.available() and time_left > 60:
+    if local_llm.available() and time_left > 60 and category not in REMOTE_FIRST:
         # constrained decoding only for extraction: JSON-demanding NER prompts
         # get grammar-guaranteed well-formed JSON (VERDICTS V5)
         grammar = (grammars.JSON_GBNF
@@ -243,7 +259,7 @@ def solve(task: dict, deadline: float) -> dict:
 
     if answer is None:
         cap = config.REMOTE_MAX_TOKENS.get(category, 384)
-        remote_prompt = prompt + REMOTE_SUFFIX
+        remote_prompt = prompt + REMOTE_HINTS.get(category, "") + REMOTE_SUFFIX
         doubted = None  # verified remote answer our free audit disagreed with
         for model in pick_models(category):
             remote_answer = remote.complete(remote_prompt, model=model,

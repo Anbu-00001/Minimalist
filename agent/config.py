@@ -27,7 +27,7 @@ CODE_PREFERENCE = REMOTE_PREFERENCE  # mandatory thinking outweighs code special
 REMOTE_MAX_TOKENS = {
     "sentiment_classification": 48,
     "named_entity_recognition": 256,
-    "factual_knowledge": 160,
+    "factual_knowledge": 256,  # remote-first now; a truncated answer judges as wrong
     "text_summarisation": 256,
     "logical_reasoning": 192,
     "mathematical_reasoning": 320,

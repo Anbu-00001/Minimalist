@@ -1,0 +1,55 @@
+1
+00:00:00,000 --> 00:00:06,000
+AMDA — Verify Before You Pay
+
+2
+00:00:06,000 --> 00:00:13,000
+Track 1 scores accuracy first, then ranks by tokens spent.
+Local tokens are free.
+
+3
+00:00:13,000 --> 00:00:20,000
+So the scarce resource isn't capability —
+it's confidence in a free answer.
+
+4
+00:00:20,000 --> 00:00:30,000
+AMDA verifies before it escalates: code is executed,
+math is re-derived, logic is solved independently.
+
+5
+00:00:30,000 --> 00:00:38,000
+Only a genuine verification failure calls a paid
+remote model — throttled and capped.
+
+6
+00:00:38,000 --> 00:00:46,000
+Live run: the exact image pushed to GHCR,
+under the real 2 vCPU / 4GB grading constraint.
+
+7
+00:00:46,000 --> 00:00:56,000
+5 of 8 tasks resolved locally — zero token cost.
+
+8
+00:00:56,000 --> 00:01:05,000
+Only 3 tasks escalated — 33 output tokens, total.
+
+9
+00:01:05,000 --> 00:01:15,000
+228-task internal benchmark. Math: 28/28 once verified.
+Logic: 92% solver accuracy.
+
+10
+00:01:15,000 --> 00:01:25,000
+We read real competitor code. No one else
+re-derives answers before spending a paid token.
+
+11
+00:01:25,000 --> 00:01:33,000
+Verify locally. Escalate surgically.
+Spend only where correctness demands it.
+
+12
+00:01:33,000 --> 00:01:38,000
+AMDA — built for AMD Developer Hackathon Act II, Track 1.

@@ -1,0 +1,230 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @page { size: 1920px 1080px; margin: 0; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html { width:1920px; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    color:#f2f2f2;
+  }
+  .slide {
+    width:1920px; height:1080px; position:relative;
+    background:
+      radial-gradient(circle at 18% 15%, rgba(255,90,30,0.10), transparent 42%),
+      linear-gradient(135deg, #0a0c10 0%, #0d1016 55%, #100c0a 100%);
+    page-break-after: always;
+    overflow:hidden;
+    padding:80px 110px;
+  }
+  .slide:last-child { page-break-after: auto; }
+  .grid { position:absolute; inset:0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+    background-size:64px 64px;
+    mask-image: radial-gradient(ellipse at 50% 30%, black 15%, transparent 70%);
+  }
+  .kicker { font-size:20px; letter-spacing:4px; font-weight:700; color:#ff8a3d; text-transform:uppercase; position:relative; z-index:1;}
+  h1 { font-size:64px; font-weight:800; margin-top:18px; position:relative; z-index:1; }
+  h1 .accent { color:#ff8a3d; }
+  .body { position:relative; z-index:1; margin-top:48px; }
+  .lede { font-size:30px; color:#c7cad1; max-width:1500px; line-height:1.5; margin-bottom:36px; }
+  ul.pts { list-style:none; font-size:27px; line-height:1.85; color:#dcdee3; max-width:1560px; }
+  ul.pts li { padding-left:38px; position:relative; margin-bottom:6px; }
+  ul.pts li::before { content:"›"; position:absolute; left:0; color:#ff8a3d; font-weight:800; }
+  ul.pts b { color:#fff; }
+  .pagenum { position:absolute; bottom:44px; right:60px; font-size:18px; color:#5a5e66; z-index:1; }
+  .brand { position:absolute; bottom:44px; left:110px; font-size:18px; color:#5a5e66; letter-spacing:2px; z-index:1; }
+
+  /* flow diagram */
+  .flow { display:flex; align-items:center; gap:22px; margin-top:20px; position:relative; z-index:1; flex-wrap:wrap; }
+  .fbox { border:2px solid rgba(255,255,255,0.2); border-radius:12px; padding:24px 30px; font-size:23px; font-weight:600; text-align:center; background:rgba(255,255,255,0.03); min-width:170px; }
+  .fbox.free { border-color:#3ddc84; color:#3ddc84; }
+  .fbox.paid { border-color:#ff5a1e; color:#ff9a5a; }
+  .fbox .sm { display:block; font-size:16px; font-weight:400; color:#9aa; margin-top:6px; }
+  .arrow { font-size:34px; color:#555; }
+  .branch { display:flex; flex-direction:column; gap:10px; }
+
+  /* table */
+  table { border-collapse:collapse; width:100%; margin-top:10px; font-size:23px; position:relative; z-index:1; }
+  th, td { text-align:left; padding:16px 20px; border-bottom:1px solid rgba(255,255,255,0.1); }
+  th { color:#ff8a3d; font-size:19px; letter-spacing:1px; text-transform:uppercase; }
+  td.num { color:#fff; font-weight:700; font-family:"Courier New",monospace; }
+  tr:last-child td { border-bottom:none; }
+
+  .chiprow { display:flex; gap:18px; margin-top:34px; position:relative; z-index:1; flex-wrap:wrap; }
+  .chip { border:1px solid rgba(255,255,255,0.18); border-radius:999px; padding:14px 26px; font-size:20px; font-weight:600; background:rgba(255,255,255,0.03); }
+  .chip b { color:#ff8a3d; }
+
+  .two-col { display:flex; gap:70px; position:relative; z-index:1; margin-top:10px; }
+  .col { flex:1; }
+  .col h3 { font-size:24px; color:#ff8a3d; margin-bottom:14px; }
+</style>
+</head>
+<body>
+
+<!-- SLIDE 1: TITLE -->
+<section class="slide">
+  <div class="grid"></div>
+  <div class="kicker">AMD Developer Hackathon &middot; Act II &middot; Track 1</div>
+  <h1><span class="accent" style="font-size:150px;">AMDA</span></h1>
+  <div style="font-size:44px;font-weight:700;margin-top:10px;position:relative;z-index:1;">Verify Before You Pay</div>
+  <div class="lede" style="margin-top:30px;">A hybrid token-efficient routing agent that proves its own answer locally
+  &mdash; code execution, program-checked math, constraint-solved logic &mdash;
+  before it ever spends a paid remote token.</div>
+  <div class="chiprow">
+    <div class="chip"><b>0-token</b> majority route</div>
+    <div class="chip"><b>228-task</b> internal benchmark</div>
+    <div class="chip"><b>92%</b> solver-route accuracy</div>
+  </div>
+  <div class="brand">AMDA</div>
+  <div class="pagenum">1 / 7</div>
+</section>
+
+<!-- SLIDE 2: THE GAME -->
+<section class="slide">
+  <div class="grid"></div>
+  <div class="kicker">The Scoreboard</div>
+  <h1>Accuracy gates you in.<br><span class="accent">Tokens decide who wins.</span></h1>
+  <div class="body">
+    <div class="lede">Track 1 scores every submission the same way: pass an accuracy gate first,
+    then rank all survivors by ascending total tokens spent. Local inference is scored at zero.</div>
+    <ul class="pts">
+      <li>Model <b>capability</b> isn't the scarce resource here &mdash; every serious entry can run a capable model.</li>
+      <li>The scarce resource is <b>confidence</b>: knowing when your free local answer is already correct,
+          without needing to ask a paid model to double-check.</li>
+      <li>So the winning agent isn't the one with the best prompt. It's the one that can <b>prove</b> its
+          free answer is right &mdash; and only pays when it genuinely can't.</li>
+    </ul>
+  </div>
+  <div class="brand">AMDA</div>
+  <div class="pagenum">2 / 7</div>
+</section>
+
+<!-- SLIDE 3: ARCHITECTURE -->
+<section class="slide">
+  <div class="grid"></div>
+  <div class="kicker">Architecture</div>
+  <h1>Classify &rarr; Solve &rarr; <span class="accent">Verify</span> &rarr; Escalate</h1>
+  <div class="body">
+    <div class="flow">
+      <div class="fbox">PROMPT<span class="sm">keyword classifier, 0 tokens</span></div>
+      <div class="arrow">&rarr;</div>
+      <div class="fbox free">LOCAL MODEL<span class="sm">llama.cpp, in-container, $0</span></div>
+      <div class="arrow">&rarr;</div>
+      <div class="fbox">VERIFY<span class="sm">executed, not eyeballed</span></div>
+      <div class="arrow">&rarr;</div>
+      <div class="branch">
+        <div class="fbox free" style="min-width:220px;">PASS &rarr; ship free</div>
+        <div class="fbox paid" style="min-width:220px;">FAIL &rarr; escalate, throttled</div>
+      </div>
+    </div>
+    <ul class="pts" style="margin-top:44px;">
+      <li><b>Code</b> &mdash; generated/debugged functions are executed against spec-derived assertions pulled from the prompt, not just checked for "does it parse."</li>
+      <li><b>Math</b> &mdash; answers are independently re-derived by translating the word problem into a program and executing it, not pattern-matched.</li>
+      <li><b>Logic puzzles</b> &mdash; translated into declarative constraints and solved independently with a CSP solver; agreement with the model's own answer is the verification.</li>
+      <li>Only a genuine verification failure escalates to a remote model &mdash; and that call is rate-throttled and capped.</li>
+    </ul>
+  </div>
+  <div class="brand">AMDA</div>
+  <div class="pagenum">3 / 7</div>
+</section>
+
+<!-- SLIDE 4: TOKEN ECONOMICS -->
+<section class="slide">
+  <div class="grid"></div>
+  <div class="kicker">Token Economics</div>
+  <h1>Most tasks never <span class="accent">reach the meter.</span></h1>
+  <div class="body">
+    <table>
+      <tr><th>Route</th><th>What it means</th><th>Cost</th></tr>
+      <tr><td>local / local+consistent</td><td>Local model answer, self-consistency checked</td><td class="num">$0</td></tr>
+      <tr><td>local+program</td><td>Math re-derived and executed independently</td><td class="num">$0</td></tr>
+      <tr><td>solver</td><td>Logic puzzle solved by CSP solver, cross-checked</td><td class="num">$0</td></tr>
+      <tr><td>fallback</td><td>Verification failed &rarr; escalate to remote, throttled</td><td class="num">paid, minimal</td></tr>
+    </table>
+    <div class="lede" style="margin-top:40px;">Constrained-Docker smoke test (2 vCPU / 4GB, real remote escalation live):
+    8/8 tasks answered in 188s, 5 routed local, only 3 escalated &mdash; totaling
+    <b style="color:#fff;">33 output tokens</b> scored across the entire run.</div>
+    <div class="chiprow">
+      <div class="chip"><b>5 / 8</b> resolved at $0</div>
+      <div class="chip"><b>188s</b> wall time (budget: 540s)</div>
+      <div class="chip"><b>2.6GB</b> peak memory (limit: 4GB)</div>
+    </div>
+  </div>
+  <div class="brand">AMDA</div>
+  <div class="pagenum">4 / 7</div>
+</section>
+
+<!-- SLIDE 5: EVALUATION RIGOR -->
+<section class="slide">
+  <div class="grid"></div>
+  <div class="kicker">Evaluation Rigor</div>
+  <h1>We measured it. <span class="accent">Then fixed what we found.</span></h1>
+  <div class="body two-col">
+    <div class="col">
+      <h3>228-task internal benchmark</h3>
+      <ul class="pts">
+        <li>All 8 leaderboard categories, gold answers independently checked and corrected where wrong.</li>
+        <li>Math: <b>28/28</b> perfect once the local+program route runs (100%).</li>
+        <li>Logic: <b>92%</b> solver-route accuracy after fixing a label-formatting bug (right answer, wrong words).</li>
+        <li>A deterministic judge, mirroring exactly what the leaderboard measures &mdash; accuracy and tokens.</li>
+      </ul>
+    </div>
+    <div class="col">
+      <h3>Live-leaderboard forensics</h3>
+      <ul class="pts">
+        <li>Reverse-engineered the accuracy gate from 79 public leaderboard entries: the hidden eval set is a 19-item set.</li>
+        <li>Gate threshold bracketed to <b>&ge;16/19 correct (84.2%)</b> &mdash; every observed score matches k/19 to within 0.05pp.</li>
+        <li>We design past that bar, not just at it.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="brand">AMDA</div>
+  <div class="pagenum">5 / 7</div>
+</section>
+
+<!-- SLIDE 6: COMPLIANCE & DIFFERENTIATION -->
+<section class="slide">
+  <div class="grid"></div>
+  <div class="kicker">Compliance &amp; Differentiation</div>
+  <h1>Boring where it counts. <span class="accent">Different where it matters.</span></h1>
+  <div class="body two-col">
+    <div class="col">
+      <h3>Compliance, verified live</h3>
+      <ul class="pts">
+        <li>Reads /input/tasks.json, writes /output/results.json, exits 0.</li>
+        <li>linux/amd64 image, pushed and pulled anonymously end-to-end &mdash; simulated the grading VM exactly.</li>
+        <li>Runs clean inside 2 vCPU / 4GB with real remote escalation exercised, not just local-only tests.</li>
+        <li>Degrades gracefully to remote-only if the local server fails to boot.</li>
+      </ul>
+    </div>
+    <div class="col">
+      <h3>What we saw in public competitor code</h3>
+      <ul class="pts">
+        <li>Classify once, call one remote model, <b>zero verification</b>.</li>
+        <li>A fine-tuned classifier that still <b>always pays</b> for a remote call.</li>
+        <li>Same model asking itself <b>"are you sure?"</b> instead of independent verification.</li>
+        <li>We found no one else re-deriving answers by execution before spending a paid token.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="brand">AMDA</div>
+  <div class="pagenum">6 / 7</div>
+</section>
+
+<!-- SLIDE 7: CLOSE -->
+<section class="slide">
+  <div class="grid"></div>
+  <div class="kicker">AMD Developer Hackathon &middot; Act II &middot; Track 1</div>
+  <h1 style="margin-top:60px;">Verify locally.<br>Escalate surgically.<br><span class="accent">Spend only where correctness demands it.</span></h1>
+  <div class="lede" style="margin-top:50px;">AMDA &mdash; built to win on both halves of the scoreboard: accuracy first, tokens second.</div>
+  <div class="brand">AMDA</div>
+  <div class="pagenum">7 / 7</div>
+</section>
+
+</body>
+</html>
