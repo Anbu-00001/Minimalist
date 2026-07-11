@@ -82,7 +82,7 @@ def _run_python(code: str, timeout: float = 5.0) -> bool:
 
 # ---------- program-aided math verification (VERDICTS V6) ----------
 
-_NUM_RE = r"-?\$?\d[\d,]*\.?\d*"
+_NUM_RE = r"-?\$?\d[\d,]*\.?\d*(?:[eE][+-]?\d+)?"
 # a safe arithmetic expression: digits/operators plus a small function whitelist
 _EXPR_OK = re.compile(r"^(?:\d|[\s+\-*/().,eE_]|\*\*|round|abs|min|max|sum|pow)+$")
 
@@ -110,6 +110,14 @@ def extract_final_number(text: str) -> float | None:
         if nums(m.group(1)):
             return nums(m.group(1))[-1]
     for line in reversed([l for l in text.splitlines() if re.search(r"\d", l)][-3:]):
+        # a line ENDING in a bare fraction commits to a/b, not to the
+        # denominator _NUM_RE would grab last — remote answers carry no
+        # ANSWER: prefix, and "13/15" reading as 15.0 was fail-OPEN on the
+        # remote-audit path (math_adversarial_sweep.md stage 1b)
+        f = re.search(r"(?<![\d./])(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*[.!]?\s*$",
+                      line)
+        if f and float(f.group(2)) != 0:
+            return float(f.group(1)) / float(f.group(2))
         if nums(line):
             return nums(line)[-1]
     return None

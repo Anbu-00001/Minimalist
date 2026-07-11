@@ -52,7 +52,10 @@ REMOTE_FIRST = {"factual_knowledge", "named_entity_recognition", "text_summarisa
 
 # per-category nudge for the remote call itself; kept to one short sentence
 REMOTE_HINTS = {
-    "named_entity_recognition": " List every entity, including dates and times. Cities, countries, and regions are LOCATION, never ORGANIZATION.",
+    "named_entity_recognition": " List every entity, including dates and times. Keep titles and honorifics as part of PERSON names. Cities, countries, and regions are LOCATION, never ORGANIZATION.",
+    # routes remote math answers through the ANSWER-line extraction branch,
+    # whose fraction/percent handling is already hardened (2102e09)
+    "mathematical_reasoning": " End with ANSWER: <value>.",
 }
 
 
@@ -263,7 +266,14 @@ def solve(task: dict, deadline: float) -> dict:
         cap = config.REMOTE_MAX_TOKENS.get(category, 384)
         remote_prompt = prompt + REMOTE_HINTS.get(category, "") + REMOTE_SUFFIX
         doubted = None  # verified remote answer our free audit disagreed with
-        for model in pick_models(category):
+        models = pick_models(category)
+        if category in REMOTE_FIRST and models:
+            # remote-first has no verified-local answer to fall back on: a
+            # transient remote blip zeroes the task (practice-01, bundle
+            # smoke 2026-07-11). One bounded retry of the primary model
+            # after both preferences fail buys back that failure mode.
+            models = models + models[:1]
+        for model in models:
             remote_answer = remote.complete(remote_prompt, model=model,
                                             max_tokens=cap, system=SYSTEM)
             if not remote_answer:
