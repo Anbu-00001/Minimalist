@@ -41,7 +41,14 @@ REMOTE_SUFFIX = "\n\nAnswer directly and concisely. Do not show reasoning."
 # are short (low scored input cost) — unlike summarisation, whose long
 # passages would bill heavily and whose dev fails were mostly judge/data
 # artifacts, so it stays local.
-REMOTE_FIRST = {"factual_knowledge", "named_entity_recognition"}
+REMOTE_FIRST = {"factual_knowledge", "named_entity_recognition", "text_summarisation"}
+# text_summarisation added 2026-07-11 morning: the A/B measurement that would
+# have justified keeping it local was lost (scratchpad wipe + agent session
+# limits), so the call is made by dominance: the gate is binary and worth
+# everything (DNQ at close may be frozen out of the refreshed-prompt final);
+# ~2k extra input tokens worst case drops 2-3 ranks but keeps us qualified,
+# and a 31B-class remote model summarizes at least as well as the local 4B.
+# Bonus: remote is ~2s vs 30-60s local on 2vCPU for long passages.
 
 # per-category nudge for the remote call itself; kept to one short sentence
 REMOTE_HINTS = {
