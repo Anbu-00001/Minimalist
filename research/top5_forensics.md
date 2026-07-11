@@ -116,7 +116,7 @@ for task in tasks:
 
     try:
         gemini_client = OpenAI(
-            api_key="AIzaSyCrfGPizHaxjI2C8T7hhkCOoex9dji7Nz8",
+            api_key="AIzaSy...REDACTED",
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
         )
         gemini_messages = [
@@ -135,7 +135,7 @@ Every single task: (1) calls Fireworks once via the harness-provided
 `FIREWORKS_BASE_URL`, model preference-ordered toward `minimax-m3`, with
 retries; then (2) **unconditionally** calls Google's Gemini API directly at
 `generativelanguage.googleapis.com` using a **hardcoded, plaintext API key
-committed to the public repo** (`AIzaSyCrfGPizHaxjI2C8T7hhkCOoex9dji7Nz8`),
+committed to the public repo** (`AIzaSy...REDACTED`),
 and if Gemini returns anything non-empty, **that Gemini answer overwrites
 the Fireworks answer as the final submitted result.**
 

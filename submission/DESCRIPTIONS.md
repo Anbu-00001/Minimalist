@@ -7,7 +7,9 @@ AMDA — Verify-Local-First Routing Agent
 ## Short Description (one paragraph)
 
 A Track 1 agent that treats remote tokens as the scarcest resource in the
-game. Every task runs on a baked-in local model first (zero token cost); a
+game. Math, logic, code, and sentiment tasks run on a baked-in local model
+first (zero token cost); factual/NER/summarisation route remote-first since
+no cheap deterministic verifier exists for open-ended text (see README); a
 layer of *deterministic verifiers* — code execution, independent program
 re-derivation for math, a constraint solver for logic puzzles, label
 validation, format checks, JSON schema parsing — decides whether the free
@@ -81,6 +83,6 @@ Python, llama.cpp, Fireworks AI, Docker, AMD, agents, routing, token-efficiency
 - Cover image (1:1.6-ish landscape PNG) — TODO
 - Video presentation URL (YouTube unlisted) — script in VIDEO_SCRIPT.md
 - Slide presentation (PDF) — outline in SLIDES_OUTLINE.md
-- Public GitHub repo URL — https://github.com/Anbu-00001/AMDA (make public!)
+- Public GitHub repo URL — https://github.com/Anbu-00001/Minimalist (public ✓)
 - Application URL / demo platform — GHCR image URL
-  (ghcr.io/anbu-00001/amda-agent:latest — flip package to PUBLIC before submitting)
+  (ghcr.io/anbu-00001/amda-agent:latest (public ✓, anonymous pull verified))
