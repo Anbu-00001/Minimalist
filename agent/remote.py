@@ -3,6 +3,7 @@ proxy) — bypassing it invalidates the submission. Tracks scored token usage.""
 import time
 from collections import deque
 
+import httpx
 from openai import OpenAI
 
 from . import config
@@ -30,7 +31,13 @@ def _get_client() -> OpenAI:
         _client = OpenAI(
             api_key=config.FIREWORKS_API_KEY,
             base_url=config.FIREWORKS_BASE_URL,
-            timeout=config.REQUEST_TIMEOUT_S,
+            # connect gets its own short deadline: a blackholed (packet-drop)
+            # proxy must fail in 5s, not hold the full read timeout — measured
+            # 619.9s wall on 8 tasks with a scalar timeout, past the 600s
+            # grader kill line (research/chaos_proxy_test.md scenario 2). A
+            # slow-but-alive proxy (20s first-byte latency, scenario 3) only
+            # exercises read, which keeps the full budget.
+            timeout=httpx.Timeout(config.REQUEST_TIMEOUT_S, connect=5.0),
             max_retries=1,
         )
     return _client

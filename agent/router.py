@@ -274,6 +274,12 @@ def solve(task: dict, deadline: float) -> dict:
             # after both preferences fail buys back that failure mode.
             models = models + models[:1]
         for model in models:
+            # a hung proxy makes each attempt cost up to 2x the read timeout;
+            # deadline-blind retries here are what ran the blackhole chaos
+            # scenario 80s past budget (research/chaos_proxy_test.md) — don't
+            # start an attempt the budget can't absorb
+            if deadline - time.monotonic() < config.REQUEST_TIMEOUT_S + 10:
+                break
             remote_answer = remote.complete(remote_prompt, model=model,
                                             max_tokens=cap, system=SYSTEM)
             if not remote_answer:
