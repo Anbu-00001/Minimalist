@@ -25,7 +25,12 @@ PROMPT_HINTS = {
     "code_debugging": "\n\nIdentify the bug in one sentence, then give the full corrected code in a fenced block.",
     "code_generation": "\n\nReturn the complete function in a fenced code block.",
     "sentiment_classification": "\n\nState the sentiment label first, then a one-sentence justification.",
-    "named_entity_recognition": "\n\nList each entity with its type, each entity under exactly one type. Cities, countries, and regions are LOCATION, never ORGANIZATION. Use the exact format the task asks for.",
+    # terse local hints (research/local_cap_feasibility.md): a "list only /
+    # no notes" instruction makes the local answer short-COMPLETE so it fits
+    # the tight LOCAL_GEN_CAP without truncating mid-content. Only affects the
+    # local path (remote uses REMOTE_HINTS); matters when these run local.
+    "named_entity_recognition": "\n\nList only, one entity per line as 'entity: TYPE'. No explanation. Each entity under exactly one type; cities, countries, and regions are LOCATION, never ORGANIZATION.",
+    "factual_knowledge": "\n\nAnswer directly in one or two short sentences. State the key facts, no preamble, no elaboration.",
 }
 
 
@@ -216,8 +221,15 @@ def solve(task: dict, deadline: float) -> dict:
         grammar = (grammars.JSON_GBNF
                    if category == "named_entity_recognition" and "json" in prompt.lower()
                    else None)
-        answer, confidence = local_llm.complete_scored(full_prompt, system=SYSTEM,
-                                                       grammar=grammar)
+        # short-input categories get a tight decode cap so the local
+        # generation finishes inside the 2-vCPU request budget instead of
+        # timing out to empty (config.LOCAL_GEN_CAP; VERDICTS/cpu_inference)
+        local_cap = config.LOCAL_GEN_CAP.get(category)
+        answer, confidence = (
+            local_llm.complete_scored(full_prompt, system=SYSTEM, grammar=grammar,
+                                      max_tokens=local_cap)
+            if local_cap else
+            local_llm.complete_scored(full_prompt, system=SYSTEM, grammar=grammar))
         local_answer = answer  # preserved verbatim for the LOCAL_ONLY fallback
         # a confidently-low generation isn't worth a self-consistency probe;
         # None means "no signal", never low (VERDICTS V17)

@@ -70,6 +70,31 @@ LOCAL_ONLY_ESCALATE = set(
         "LOCAL_ONLY_ESCALATE", "code_generation,code_debugging").split(",")
     if c.strip())
 
+# Per-category cap on LOCAL decode length. On 2 vCPU the model decodes at
+# ~4 tok/s and SLOWS with depth (research/cpu_inference_speed.md §5), so an
+# uncapped 768-token local generation for a short-input category (factual,
+# NER) blows the 25s request budget and returns EMPTY — which then escalates,
+# defeating the whole point of going local (measured 2026-07-12: 5/7 factual
+# local generations returned len 0). A tight cap makes the generation finish
+# in time and ship a short, correct local answer at zero scored tokens.
+# Only categories with SHORT inputs benefit — summarisation's long-passage
+# prefill is the bottleneck there, so it is not capped here (stays remote).
+def _cap_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+# Caps sized to ~2.5 tok/s real-server decode (research/local_cap_feasibility.md
+# measured factual@80 -> 36s and NER@112 -> 40s, both OVER the 25s budget).
+# Halved to fit, and paired with a terse local PROMPT_HINT so the answer comes
+# out short-COMPLETE rather than truncated mid-content.
+LOCAL_GEN_CAP = {
+    "factual_knowledge": _cap_env("LOCAL_CAP_FACTUAL", 56),
+    "named_entity_recognition": _cap_env("LOCAL_CAP_NER", 64),
+}
+
 # Mean-token-logprob floor: an unverifiable local answer below it skips the
 # self-consistency probe and escalates immediately (VERDICTS V17). None
 # disables the gate. Set ONLY from measured dev-set calibration — see
