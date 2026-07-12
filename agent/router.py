@@ -265,11 +265,14 @@ def solve(task: dict, deadline: float) -> dict:
             else:
                 answer = None  # fail, or unknown with no time to check -> escalate
 
-    if answer is None and config.LOCAL_ONLY and local_answer:
+    if (answer is None and config.LOCAL_ONLY and local_answer
+            and category not in config.LOCAL_ONLY_ESCALATE):
         # local-dominant: an inconclusive verdict ships the local answer
         # rather than paying remote. All free local overrides already ran
         # above (solver/program/self-consistency); this only replaces the
-        # paid escalation, keeping scored tokens at zero.
+        # paid escalation, keeping scored tokens at zero. Categories in
+        # LOCAL_ONLY_ESCALATE (code) fall through to the remote loop below —
+        # their local failures are unrecoverable without escalation.
         answer, route = local_answer, "local-only"
 
     if answer is None:
