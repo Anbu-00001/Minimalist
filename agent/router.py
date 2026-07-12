@@ -207,8 +207,10 @@ def solve(task: dict, deadline: float) -> dict:
     time_left = deadline - time.monotonic()
 
     answer, route = None, "none"
+    local_answer = None  # best local generation, for LOCAL_ONLY fallback
 
-    if local_llm.available() and time_left > 60 and category not in REMOTE_FIRST:
+    if local_llm.available() and time_left > 60 and (
+            category not in REMOTE_FIRST or config.LOCAL_ONLY):
         # constrained decoding only for extraction: JSON-demanding NER prompts
         # get grammar-guaranteed well-formed JSON (VERDICTS V5)
         grammar = (grammars.JSON_GBNF
@@ -216,6 +218,7 @@ def solve(task: dict, deadline: float) -> dict:
                    else None)
         answer, confidence = local_llm.complete_scored(full_prompt, system=SYSTEM,
                                                        grammar=grammar)
+        local_answer = answer  # preserved verbatim for the LOCAL_ONLY fallback
         # a confidently-low generation isn't worth a self-consistency probe;
         # None means "no signal", never low (VERDICTS V17)
         low_confidence = (config.LOGPROB_ESCALATE_BELOW is not None
@@ -261,6 +264,13 @@ def solve(task: dict, deadline: float) -> dict:
                     answer = None
             else:
                 answer = None  # fail, or unknown with no time to check -> escalate
+
+    if answer is None and config.LOCAL_ONLY and local_answer:
+        # local-dominant: an inconclusive verdict ships the local answer
+        # rather than paying remote. All free local overrides already ran
+        # above (solver/program/self-consistency); this only replaces the
+        # paid escalation, keeping scored tokens at zero.
+        answer, route = local_answer, "local-only"
 
     if answer is None:
         cap = config.REMOTE_MAX_TOKENS.get(category, 384)

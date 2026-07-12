@@ -47,6 +47,29 @@ OUTPUT_PATH = os.environ.get("OUTPUT_PATH", "/output/results.json")
 TOTAL_BUDGET_S = float(os.environ.get("TOTAL_BUDGET_S", "540"))
 REQUEST_TIMEOUT_S = float(os.environ.get("REQUEST_TIMEOUT_S", "25"))  # <30s/request rule
 
+# Local-dominant mode: route every category through the local model and ship
+# its best (verifier-improved) answer instead of ever paying a remote call.
+# The free local overrides (math program-check, logic CSP solver,
+# self-consistency) still run and still improve answers — only the paid
+# escalation is suppressed. Near-zero scored tokens; trades a little accuracy
+# on the hard tail for a decisive token-rank gain (2026-07-12: real grader
+# put remote-first at 8,282 tokens / rank 55 — winning needs local dominance).
+# Defaults off so it can never alter the shipped image unless explicitly set.
+LOCAL_ONLY = os.environ.get("LOCAL_ONLY", "").lower() in ("1", "true", "yes")
+
+# Categories that STILL escalate to remote even under LOCAL_ONLY — the
+# carve-out for tasks where a local failure is a hard, unrecoverable loss the
+# free verifiers can't rescue. code_generation/code_debugging measured 3/7
+# "Unable to answer." under pure LOCAL_ONLY (batch1, 2026-07-12): the local
+# model either emits no parseable code or times out, and unlike math/logic
+# there is no zero-token solver to fall back on. Escalating only these keeps
+# the expensive-but-decisive code answers while every other category stays
+# free. Comma-separated env override; empty string = pure LOCAL_ONLY.
+LOCAL_ONLY_ESCALATE = set(
+    c.strip() for c in os.environ.get(
+        "LOCAL_ONLY_ESCALATE", "code_generation,code_debugging").split(",")
+    if c.strip())
+
 # Mean-token-logprob floor: an unverifiable local answer below it skips the
 # self-consistency probe and escalates immediately (VERDICTS V17). None
 # disables the gate. Set ONLY from measured dev-set calibration — see
