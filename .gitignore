@@ -3,6 +3,9 @@
 .env
 .env.*
 
+# local Claude Code session config — device-local, not project source
+.claude/
+
 # python artifacts
 __pycache__/
 *.py[cod]
