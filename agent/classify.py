@@ -9,10 +9,15 @@ import re
 _RULES: list[tuple[str, list[str]]] = [
     ("sentiment_classification", ["sentiment", "positive", "negative", "neutral", "tone of the review",
                                   "feel about", "opinion of", "favorable", "unfavorable"]),
-    ("named_entity_recognition", ["entities", "entity", "person, org", "person names", "organization",
-                                  "label the", "extract", "proper noun", "pull out"]),
+    # summarisation above NER: "summarize this passage" is explicit intent,
+    # while a passage saying beans are "extracted from the cherries" is
+    # incidental vocabulary — the old order misrouted exactly that dev task
+    # to NER on a 1-1 keyword tie (2026-07-12). "extract" alone is also too
+    # loose for the same reason; NER prompts say "extract all/the entities".
     ("text_summarisation", ["summarise", "summarize", "summary", "condense", "in one sentence", "tl;dr",
                             "gist", "key points", "main takeaways", "boil down", "recap", "distill"]),
+    ("named_entity_recognition", ["entities", "entity", "person, org", "person names", "organization",
+                                  "label the", "extract all", "extract the", "proper noun", "pull out"]),
     ("code_debugging", ["bug", "debug", "fix the", "error in", "incorrect code", "faulty", "fails",
                         "isn't working", "doesn't work", "not working", "unexpected behavior",
                         "diagnose", "repair", "correct it", "the issue"]),

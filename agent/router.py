@@ -22,15 +22,27 @@ SYSTEM = "You are a precise assistant. Answer correctly and concisely. No preamb
 # category-specific nudges keep local answers in a shape the judge expects
 PROMPT_HINTS = {
     "mathematical_reasoning": "\n\nWork step by step, then give the final answer on the last line as: ANSWER: <value>",
-    "code_debugging": "\n\nIdentify the bug in one sentence, then give the full corrected code in a fenced block.",
+    # code FIRST: with "identify the bug" leading, the 4B spent its whole
+    # decode budget on bug analysis and never reached the code (2 dev fails,
+    # 2026-07-12 cap7 batch1)
+    "code_debugging": "\n\nGive the corrected code in a fenced block FIRST, then one short sentence naming the bug. Nothing else.",
     "code_generation": "\n\nReturn the complete function in a fenced code block.",
     "sentiment_classification": "\n\nState the sentiment label first, then a one-sentence justification.",
-    # terse local hints (research/local_cap_feasibility.md): a "list only /
-    # no notes" instruction makes the local answer short-COMPLETE so it fits
-    # the tight LOCAL_GEN_CAP without truncating mid-content. Only affects the
-    # local path (remote uses REMOTE_HINTS); matters when these run local.
-    "named_entity_recognition": "\n\nList only, one entity per line as 'entity: TYPE'. No explanation. Each entity under exactly one type; cities, countries, and regions are LOCATION, never ORGANIZATION.",
+    # terse local hints (research/local_cap_feasibility.md): a short-answer
+    # instruction makes the local answer short-COMPLETE so it fits the tight
+    # LOCAL_GEN_CAP without truncating mid-content. Only affects the local
+    # path (remote uses REMOTE_HINTS); matters when these run local.
+    # NER: completeness wording, NOT "list only" — the terse version made the
+    # model stop voluntarily at 44/64 tokens and drop entities outright
+    # (research/cap2_ship_risks.md, lost "Grammy Award"). This mirrors the
+    # remote hint that fixed the identical failure on the remote path.
+    "named_entity_recognition": "\n\nList EVERY entity — persons (keep titles), organizations, locations, dates, times, events, awards. One per line as 'entity: TYPE', no explanation. Keep multi-word date phrases intact as one entity (e.g. 'summer of 1843'). Cities, countries, and regions are LOCATION, never ORGANIZATION.",
     "factual_knowledge": "\n\nAnswer directly in one or two short sentences. State the key facts, no preamble, no elaboration.",
+    "logical_reasoning": "\n\nGive the final answer directly (the assignment or conclusion), no working.",
+    # the length rule must come FIRST and defer to the task: naming "3
+    # sentences" up front made the 4B ship 3 sentences against a task that
+    # demanded exactly 2 (dev fail, 2026-07-12)
+    "text_summarisation": "\n\nIf the task states a length limit (a sentence or word count), obey it EXACTLY. Otherwise summarize in 2-3 short sentences covering the main points.",
 }
 
 
@@ -74,9 +86,12 @@ def pick_models(category: str) -> list[str]:
     return allowed[:2]
 
 
-def _self_consistent(prompt: str, first: str) -> bool:
-    """Second local sample at higher temperature; agreement = confidence."""
-    second = local_llm.complete(prompt, system=SYSTEM, temperature=0.7)
+def _self_consistent(prompt: str, first: str, max_tokens: int = 768) -> bool:
+    """Second local sample at higher temperature; agreement = confidence.
+    Cap it like the first sample — an uncapped probe on 2 vCPU times out to
+    None and silently reads as 'inconsistent'."""
+    second = local_llm.complete(prompt, system=SYSTEM, temperature=0.7,
+                                max_tokens=max_tokens)
     if not second:
         return False
     a, b = first.strip().lower(), second.strip().lower()
@@ -133,6 +148,63 @@ def _math_program_check(prompt: str, answer: str) -> bool | None:
         if numbers_agree(stated, value * 100) or numbers_agree(stated * 100, value):
             return True
     return False
+
+
+MATH_EXPR_SUFFIX = (
+    "\n\nWrite ONE Python arithmetic expression (a single line, no imports, "
+    "no variables) that computes the final numeric answer. "
+    "Output only the expression.")
+
+
+def _format_number(v: float) -> str:
+    if v == int(v):
+        return str(int(v))
+    # NOT %g: its 6-significant-digit default truncates 1157.625 -> "1157.62"
+    return f"{v:.6f}".rstrip("0").rstrip(".")
+
+
+def _apply_rounding(value: float, prompt: str) -> float:
+    """Honor an explicit rounding instruction: the exact expression value
+    (1157.625) judged against a 'round to nearest dollar' task reads as
+    instruction non-compliance to an LLM judge even when numerically closer."""
+    low = prompt.lower()
+    if "round" not in low and "nearest" not in low:
+        return value
+    if ("cent" in low or "hundredth" in low
+            or "two decimal" in low or "2 decimal" in low):
+        return round(value, 2)
+    return float(round(value))
+
+
+def _math_local_program(prompt: str) -> tuple[str | None, str]:
+    """Expression-first math (PAL, program-aided): have the local model emit
+    a ~15-40 token arithmetic expression and EXECUTE it, instead of decoding
+    a 150-250 token derivation a 2-vCPU box cannot finish in budget (cap4,
+    2026-07-12: uncapped derivations timed out and the 40-token retry shipped
+    truncated step-1s — 1/7 dev). Same translate-then-execute move as
+    _math_program_check, now used to PRODUCE the answer, not just audit one.
+    Falls back to a bare-number ask (32 tokens, always finishes) when no
+    usable expression comes back. Returns (answer, route)."""
+    reply = local_llm.complete(prompt + MATH_EXPR_SUFFIX, max_tokens=64,
+                               system=SYSTEM)
+    if reply:
+        expr = extract_expression(reply)
+        if expr is not None:
+            value = run_expression(expr)
+            if value is not None:
+                final = _apply_rounding(value, prompt)
+                # show the work: the expression IS the derivation, and a bare
+                # number invites an LLM judge to dock for "no reasoning shown"
+                work = f"Computation: {expr} = {_format_number(value)}"
+                if final != value:
+                    work += f", rounded to {_format_number(final)}"
+                return f"{work}\nANSWER: {_format_number(final)}", "local+program"
+    bare = local_llm.complete(
+        prompt + "\n\nGive ONLY the final numeric answer. No steps, no explanation.",
+        max_tokens=32, system=SYSTEM)
+    if bare:
+        return f"ANSWER: {bare.strip()}", "local-bare"
+    return None, "none"
 
 
 def _code_assertion_check(prompt: str, code: str) -> bool | None:
@@ -214,8 +286,25 @@ def solve(task: dict, deadline: float) -> dict:
     answer, route = None, "none"
     local_answer = None  # best local generation, for LOCAL_ONLY fallback
 
-    if local_llm.available() and time_left > 60 and (
-            category not in REMOTE_FIRST or config.LOCAL_ONLY):
+    # Math never free-generates under LOCAL_ONLY: expression-first program
+    # path — decode ~15-40 tokens and execute, instead of a derivation the
+    # 2-vCPU box can't finish (see _math_local_program).
+    if (config.LOCAL_ONLY and category == "mathematical_reasoning"
+            and local_llm.available() and time_left > 60):
+        answer, route = _math_local_program(prompt)
+
+    # Under LOCAL_ONLY a REMOTE_FIRST category still runs locally (free) —
+    # UNLESS it is also in LOCAL_ONLY_ESCALATE, which is going remote anyway:
+    # generating locally first would burn ~20-50s of budget for an answer
+    # we've measured to be unreliable. Same for LOCAL_SKIP (code_debugging:
+    # the full corrected program can't be decoded in budget) and math, which
+    # just took its program path above.
+    _skip_local = (
+        (category in REMOTE_FIRST and (
+            not config.LOCAL_ONLY or category in config.LOCAL_ONLY_ESCALATE))
+        or (config.LOCAL_ONLY and category in config.LOCAL_SKIP)
+        or (config.LOCAL_ONLY and category == "mathematical_reasoning"))
+    if answer is None and local_llm.available() and time_left > 60 and not _skip_local:
         # constrained decoding only for extraction: JSON-demanding NER prompts
         # get grammar-guaranteed well-formed JSON (VERDICTS V5)
         grammar = (grammars.JSON_GBNF
@@ -230,19 +319,58 @@ def solve(task: dict, deadline: float) -> dict:
                                       max_tokens=local_cap)
             if local_cap else
             local_llm.complete_scored(full_prompt, system=SYSTEM, grammar=grammar))
+        if not answer and config.LOCAL_ONLY:
+            # decode timed out and returned EMPTY. Left alone this falls
+            # through to a PAID remote call — the hidden source of most
+            # remaining escalations. Retry locally at a cap small enough to
+            # be guaranteed to finish; a terse local answer costs zero tokens
+            # and beats paying for one (2026-07-12 token push).
+            answer, confidence = local_llm.complete_scored(
+                full_prompt, system=SYSTEM, grammar=grammar,
+                max_tokens=config.LOCAL_RETRY_CAP)
         local_answer = answer  # preserved verbatim for the LOCAL_ONLY fallback
         # a confidently-low generation isn't worth a self-consistency probe;
         # None means "no signal", never low (VERDICTS V17)
         low_confidence = (config.LOGPROB_ESCALATE_BELOW is not None
                           and confidence is not None
                           and confidence < config.LOGPROB_ESCALATE_BELOW)
+        # Under LOCAL_ONLY, a category outside LOCAL_ONLY_ESCALATE ships its
+        # local answer NO MATTER what the extra probes conclude (the restore
+        # block below re-ships it on any demotion) — so probes whose only
+        # power is to demote (sentiment double-read, self-consistency) are
+        # pure time burn there: ~10-50s/task on 2 vCPU, the margin between
+        # fitting the 600s kill line and shedding tasks to placeholders.
+        # Probes that can IMPROVE the answer (logic solver override) or gate
+        # a real escalation (code assertion check) still run.
+        _ships_regardless = (config.LOCAL_ONLY
+                             and category not in config.LOCAL_ONLY_ESCALATE)
+        # a decode that hit the token cap mid-code is NOT salvageable: the
+        # parser-oracle extracts a syntactically-valid prefix that "runs
+        # clean" while missing half its body (batch1 2026-07-12: two such
+        # answers shipped). An odd number of ``` fences means the closing
+        # fence never arrived — treat as no answer so code categories
+        # escalate and everything else retries/ships-short instead.
+        if (answer and category.startswith("code")
+                and answer.count("```") % 2 == 1):
+            answer = None
+            if not _ships_regardless:
+                # escalation is available: clear local_answer too, or the
+                # restore block below resurrects this exact truncated code
+                # and the escalation never fires. Under pure-zero the
+                # truncation IS the best available answer (partial credit
+                # beats a placeholder), so there local_answer stays and
+                # ships directly — same behavior the 19-task dress
+                # rehearsal validated — without burning ~45s on a retry
+                # that would reproduce the identical truncation.
+                local_answer = None
         if answer:
             verdict = verify(category, prompt, answer)
             if (verdict == "pass" and category == "sentiment_classification"
-                    and time_left > 90 and not _sentiment_label_agrees(prompt, answer)):
+                    and time_left > 90 and not _ships_regardless
+                    and not _sentiment_label_agrees(prompt, answer)):
                 verdict = "fail"  # second constrained read disagrees on the label
             if (verdict == "pass" and category in ("code_generation", "code_debugging")
-                    and time_left > 90):
+                    and time_left > 90 and not _ships_regardless):
                 code = extract_python_code(answer)
                 # a script-only "doesn't crash" pass can't see a wrong-but-
                 # non-crashing bug (VERDICTS V21) -- a real assertion
@@ -266,11 +394,16 @@ def solve(task: dict, deadline: float) -> dict:
                         # the solver's unique solution beats a free-form
                         # guess at our worst category (VERDICTS V15)
                         answer, route = solver_answer, "solver"
+                    elif _ships_regardless:
+                        route = "local-only"  # probe couldn't change the ship
                     elif not low_confidence and _self_consistent(full_prompt, answer):
                         route = "local+consistent"
                     else:
                         answer = None
-                elif not low_confidence and _self_consistent(full_prompt, answer):
+                elif _ships_regardless:
+                    route = "local-only"  # consistency probe couldn't change the ship
+                elif not low_confidence and _self_consistent(
+                        full_prompt, answer, local_cap or 768):
                     route = "local+consistent"
                 else:
                     answer = None
@@ -281,18 +414,35 @@ def solve(task: dict, deadline: float) -> dict:
             and category not in config.LOCAL_ONLY_ESCALATE):
         # local-dominant: an inconclusive verdict ships the local answer
         # rather than paying remote. All free local overrides already ran
-        # above (solver/program/self-consistency); this only replaces the
-        # paid escalation, keeping scored tokens at zero. Categories in
-        # LOCAL_ONLY_ESCALATE (code) fall through to the remote loop below —
-        # their local failures are unrecoverable without escalation.
+        # above (solver/program); this only replaces the paid escalation,
+        # keeping scored tokens at zero. Categories in LOCAL_ONLY_ESCALATE
+        # (if any are configured) fall through to the remote loop below.
         answer, route = local_answer, "local-only"
 
-    if answer is None:
-        cap = config.REMOTE_MAX_TOKENS.get(category, 384)
+    cap = config.REMOTE_MAX_TOKENS.get(category, 384)
+    # Under LOCAL_ONLY, a category outside LOCAL_ONLY_ESCALATE must NEVER
+    # reach the remote loop — not even when the local generation came back
+    # EMPTY (double decode timeout). Before this guard, that empty-answer
+    # path silently fell through to a paid call, and with a 0-token club
+    # holding ranks 1-9, one such call is the whole leaderboard: the
+    # last-resort local retry below handles the empty case instead.
+    # ONE exception — the safety valve: if the local server is actually DOWN
+    # (fresh probe, not the memoized flag), pure-zero mode would otherwise
+    # ship "Unable to answer." for the entire run (0% -> DNQ). A paid,
+    # badly-ranked run beats a zeroed one; the valve never opens while the
+    # local engine is alive.
+    if answer is None and (not config.LOCAL_ONLY
+                           or category in config.LOCAL_ONLY_ESCALATE
+                           or not local_llm.healthy_now()):
         remote_prompt = prompt + REMOTE_HINTS.get(category, "") + REMOTE_SUFFIX
         doubted = None  # verified remote answer our free audit disagreed with
         models = pick_models(category)
-        if category in REMOTE_FIRST and models:
+        if config.LOCAL_ONLY:
+            # code is the only category that still pays; a second-model
+            # fallback would double that bill for a marginal accuracy gain,
+            # and the local answer is already there as a backstop.
+            models = models[:config.LOCAL_ONLY_MAX_MODELS]
+        elif category in REMOTE_FIRST and models:
             # remote-first has no verified-local answer to fall back on: a
             # transient remote blip zeroes the task (practice-01, bundle
             # smoke 2026-07-11). One bounded retry of the primary model
@@ -338,7 +488,11 @@ def solve(task: dict, deadline: float) -> dict:
         # and skip it outright once there isn't time left to even try --
         # a missing TOTAL_BUDGET_S deadline scores the whole run zero, which
         # is worse than one weak answer (main.py's own design rule).
-        if deadline - time.monotonic() > config.REQUEST_TIMEOUT_S + 5:
+        # LOCAL_REQUEST_TIMEOUT_S, not REQUEST_TIMEOUT_S: this retry calls
+        # local_llm, whose client timeout is the longer local one (70s) —
+        # gating on the 25s remote figure let an attempt start with less
+        # time left than the retry itself could legitimately take
+        if deadline - time.monotonic() > config.LOCAL_REQUEST_TIMEOUT_S + 5:
             if category == "mathematical_reasoning":
                 # even the 320-token cap still carries the "work step by
                 # step" hint (full_prompt), which needs more decode time
@@ -350,7 +504,12 @@ def solve(task: dict, deadline: float) -> dict:
                 retry_prompt = prompt + "\n\nGive ONLY the final numeric answer. No steps, no explanation."
                 answer = local_llm.complete(retry_prompt, max_tokens=32, system=SYSTEM) or "Unable to answer."
             else:
-                answer = local_llm.complete(full_prompt, max_tokens=cap, system=SYSTEM) or "Unable to answer."
+                # local-sized cap, NOT the remote cap: REMOTE_MAX_TOKENS
+                # (256+) cannot decode locally inside the timeout, which
+                # would turn this rescue into a guaranteed second empty
+                retry_cap = min(cap, config.LOCAL_GEN_CAP.get(category, 64))
+                answer = local_llm.complete(full_prompt, max_tokens=retry_cap,
+                                            system=SYSTEM) or "Unable to answer."
         else:
             answer = "Unable to answer."
         route = route if route != "none" else "fallback"

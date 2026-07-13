@@ -14,12 +14,20 @@ _available: bool | None = None
 def available() -> bool:
     global _available
     if _available is None:
-        try:
-            httpx.get(config.LOCAL_BASE_URL.replace("/v1", "/health"), timeout=2.0)
-            _available = True
-        except Exception:
-            _available = False
+        _available = healthy_now()
     return _available
+
+
+def healthy_now() -> bool:
+    """Fresh, un-memoized health probe. available() caches its first answer
+    for speed, which goes stale if the server dies mid-run — and under pure
+    LOCAL_ONLY a dead server must open the remote safety valve (router.py)
+    or the whole run ships placeholders."""
+    try:
+        httpx.get(config.LOCAL_BASE_URL.replace("/v1", "/health"), timeout=2.0)
+        return True
+    except Exception:
+        return False
 
 
 def _get_client() -> OpenAI:
@@ -28,7 +36,10 @@ def _get_client() -> OpenAI:
         _client = OpenAI(
             api_key="unused",
             base_url=config.LOCAL_BASE_URL,
-            timeout=config.REQUEST_TIMEOUT_S,
+            # NOT the remote REQUEST_TIMEOUT_S: the <30s/request rule is
+            # about proxy calls; this server is ours. 25s truncated every
+            # local generation past ~55 tokens to empty (config.py).
+            timeout=config.LOCAL_REQUEST_TIMEOUT_S,
             max_retries=0,
         )
     return _client

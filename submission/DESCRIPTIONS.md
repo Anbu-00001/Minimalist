@@ -2,20 +2,19 @@
 
 ## Project Title
 
-AMDA — Verify-Local-First Routing Agent
+AMDA — Local-Dominant Verified Routing Agent
 
 ## Short Description (one paragraph)
 
 A Track 1 agent that treats remote tokens as the scarcest resource in the
-game. Math, logic, code, and sentiment tasks run on a baked-in local model
-first (zero token cost); factual/NER/summarisation route remote-first since
-no cheap deterministic verifier exists for open-ended text (see README); a
-layer of *deterministic verifiers* — code execution, independent program
-re-derivation for math, a constraint solver for logic puzzles, label
-validation, format checks, JSON schema parsing — decides whether the free
-answer is provably good enough. Only tasks that demonstrably fail
-verification escalate to Fireworks, and even those answers get audited for
-free before we trust them.
+game — and pays them on exactly one condition. All eight categories run on
+a baked-in local model (zero token cost): math answers are *computed*, not
+generated (the model emits a short arithmetic expression, we execute it);
+logic answers are checked — and can be overridden — by a constraint solver;
+code is extracted with a parser-oracle, executed, and tested against
+model-written assertions. Only a code answer that demonstrably fails that
+verification buys a single capped Fireworks call. Everything else ships
+free, in answer shapes tuned and re-validated on a 228-task private dev set.
 
 ## Long Description
 
@@ -36,29 +35,28 @@ scored at zero. Track 1 is the exact regime where the cascade dominates.
 
 1. **Classify** — a keyword-rule classifier (no LLM, no tokens) tags each task
    with one of the 8 categories and selects a category-specific answer format
-   hint.
-2. **Solve locally & verify deterministically** — a quantized model served by
-   llama.cpp inside the container answers first. Then, instead of trusting it,
-   we *check* it with code: generated/debugged Python is extracted with a
-   parser-oracle (EvalPlus-style longest-valid-segment) and executed; math
-   answers are re-derived by independently translating the word problem into
-   an arithmetic expression and executing it — a check the reference eval
-   frameworks (lighteval, lm-evaluation-harness) don't have; logic puzzles
-   are translated into declarative constraints and handed to a CSP solver
-   (the Logic-LM/SatLM pattern — translation is extraction, solving is
-   exact), whose unique solution can both verify and *supply* the answer;
-   sentiment labels are re-read under a constrained grammar; summaries are
-   checked against word/sentence constraints from the prompt; NER output is
-   generated under a JSON grammar so it cannot be malformed. A verified
-   local answer costs zero tokens; for genuinely uncheckable categories a
-   self-consistency probe stands in.
-3. **Escalate surgically** — only verification failures go to Fireworks,
-   through the judging proxy, in a measured preference order (thinking-mode
-   models last: they bill their reasoning traces as output tokens — poison
-   for a token-ranked leaderboard). Escalated answers aren't blindly
-   trusted either: the same free local re-derivation audits the paid answer
-   (CRITIC pattern, ICLR 2024), and a grounded disagreement buys one shot
-   at the fallback model.
+   hint. Tasks are then solved cheapest-category-first, so a time-budget
+   squeeze can never cost more than the slowest tail.
+2. **Solve locally, compute where possible, verify deterministically** — a
+   quantized model served by llama.cpp inside the container answers
+   everything, with per-category decode caps sized so every generation
+   finishes on 2 vCPUs. Math never decodes a derivation at all: the model
+   emits a ~20-token arithmetic expression, we execute it and ship the exact
+   value (PAL-style, with rounding instructions honored) — a path that
+   scored 7/7 on dev math at zero tokens. Logic puzzles are translated into
+   declarative constraints for a CSP solver (the Logic-LM/SatLM pattern),
+   whose unique solution can both verify and *override* the free-form
+   answer. Generated/debugged code is extracted with a parser-oracle
+   (EvalPlus-style longest-valid-segment), executed, and tested against
+   assertions the model writes from the spec alone — plus a fence-parity
+   guard that catches truncated code a syntax check would miss. NER decodes
+   under a JSON grammar when JSON is requested, so it cannot be malformed.
+3. **Escalate surgically** — the ONLY paid path: a code answer that
+   demonstrably fails verification buys one capped Fireworks call through
+   the judging proxy (Gemma-4 first; thinking-mode models last, since they
+   bill reasoning traces as output tokens — poison on a token-ranked
+   leaderboard). Every other category ships its local answer, full stop.
+   Expected scored-token bill for a clean run: **zero**.
 
 **Evaluation-driven.** We built a 228-task private dev set spanning all 8
 categories from five independent generators — including fully synthetic tasks

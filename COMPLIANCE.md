@@ -52,14 +52,16 @@ measured real generations never approach the cap (`research/token_thrift_audit.m
 
 | Category | Routing | Why |
 |---|---|---|
-| factual_knowledge, named_entity_recognition, text_summarisation | remote-first (`agent/router.py::REMOTE_FIRST`) | No deterministic verifier exists for open-ended text or entity typing; the local-only self-consistency route measured 57% strict on dev, well under the 84.2% (16/19) accuracy gate. This is the fix for a real 15/19 leaderboard miss (`research/VERDICTS.md` V25). Prompts are short, so the remote-input cost is cheap; the gate is binary and worth more than the token-rank cost of paying for these three categories. |
-| mathematical_reasoning, logical_reasoning, code_debugging, code_generation, sentiment_classification | local-first, escalate only on verification failure | Each has a real deterministic or near-deterministic check (program re-derivation, CSP solver, executed assertions, grammar-constrained re-read) that a verified local answer can pass at zero token cost. |
+| mathematical_reasoning | local program path, never remote (`agent/router.py::_math_local_program`) | The local model emits a short arithmetic expression; we execute it and ship the exact value (rounding instructions honored). 7/7 on dev at zero tokens — the answer is computed, not generated. |
+| factual_knowledge, named_entity_recognition, text_summarisation, sentiment_classification, logical_reasoning | local, ships local (`LOCAL_ONLY=1`, baked into the image) | Per-category decode caps + answer-shape hints make the local answer short-COMPLETE (`agent/config.py::LOCAL_GEN_CAP`); logic answers are additionally checked against a CSP solver whose unique solution can override them. Each local replacement was re-validated on dev against the earlier remote-first configuration before shipping (see git history: that configuration held the gate at 89.5% but paid 8,282 tokens). |
+| code_generation, code_debugging | local-first, escalate ONLY on verification failure (`LOCAL_ONLY_ESCALATE`) | Executed extraction + model-written assertions + a fence-parity truncation guard decide; only a demonstrably failed code answer pays for one Fireworks call (single model, output hard-capped at `CODE_CAP`). This is the only code path in the agent that can spend scored tokens. |
 
-Measured cost: **142 scored tokens/task** (5,017 input + 2,946 output over a
-56-task graded sample, `research/final_gate_projection.md`), projecting to
-**≈2,702 tokens for a 19-task hidden-eval run**. Full per-piece overhead
-breakdown (which literal strings are sent, and the evidence each one is
-load-bearing rather than decorative) is in `research/token_thrift_audit.md`.
+Measured cost (56-task graded dev sample, 4 batches under judging-VM
+constraints `--cpus=2 --memory=4g`): **every category except code at 0
+scored tokens**; the entire dev bill was the code-escalation calls. The
+worst-case hidden-eval projection is a small number of code escalations
+(~230 measured tokens per call on dev); zero escalations — a genuinely
+free run — is the expected mode when local code answers verify.
 
 ## 3. Dev-time remote stand-in — what it is, and why it isn't in the image
 

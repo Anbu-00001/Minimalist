@@ -23,4 +23,10 @@ COPY agent/ /app/agent/
 COPY docker/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
+# Local-dominant routing is the submission's operating mode; the grader only
+# injects the Fireworks variables, so this MUST be baked in (an unset
+# LOCAL_ONLY silently reverts the agent to remote-first — the 8,282-token
+# configuration). Still just an env default: overridable at docker run.
+ENV LOCAL_ONLY=1
+
 ENTRYPOINT ["/app/entrypoint.sh"]

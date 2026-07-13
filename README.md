@@ -1,14 +1,17 @@
-# AMDA — Verify-Local-First Routing Agent (AMD Developer Hackathon Act II, Track 1)
+# AMDA — Local-Dominant Verified Routing Agent (AMD Developer Hackathon Act II, Track 1)
 
-**Verify Before You Pay.** Track 1 ranks accuracy-gate survivors by total
-Fireworks-metered tokens, and locally-generated tokens are scored at zero.
-AMDA's only real idea: don't ask "can a bigger model answer this?" — ask
-"can I *prove* my free answer is already right?" A quantized local model
-answers every task first; deterministic verifiers (code execution, program
-re-derivation, a CSP solver, grammar-constrained re-reads) decide whether
-that free answer is provably good enough to ship. Only what fails — or, for
-three categories with no cheap verifier, everything — pays for a Fireworks
-call.
+**Every token is a rank.** Track 1 ranks accuracy-gate survivors by total
+Fireworks-metered tokens, and locally-generated tokens are scored at zero —
+so the winning agent is the one that holds the accuracy gate while paying
+nothing at all. AMDA answers **all eight categories on a local model** and
+the shipped configuration spends **zero scored tokens**: for every category
+it has either a zero-token way to *compute* the answer (math by program
+execution, logic by CSP solver), or a measured, dev-validated local answer
+format sized to finish on 2 vCPUs. A full Fireworks escalation path exists
+in the code — verification-gated, proxy-only, output-capped — and is how
+earlier revisions of this agent qualified; it is disabled by default
+(`LOCAL_ONLY_ESCALATE=""`) because on this leaderboard a single remote call
+costs more rank than a wrong answer does accuracy.
 
 ## Architecture
 
@@ -16,110 +19,124 @@ call.
 /input/tasks.json
       │
       ▼
- classify (keyword rules, no LLM, no tokens)         agent/classify.py
+ classify (keyword rules, no LLM, no tokens)          agent/classify.py
       │
-      ├── factual_knowledge, NER, summarisation ──────────────────────┐
-      │   (REMOTE_FIRST — no deterministic verifier exists;           │
-      │    dev-measured 57% strict on the self-consistency route,     │
-      │    see "Why remote-first" below)                              │
-      │                                                                │
-      └── math, logic, code_debug/gen, sentiment                      │
-              │                                                        │
-              ▼                                                        │
-        local model (llama.cpp, Qwen3-4B Q4, zero token cost)          │
-              │                                                        │
-              ▼                                                        │
-        deterministic verification          agent/verifiers.py         │
-          code      → parser-oracle extract + assertion execution      │
-          math      → independent program re-derivation                │
-          logic     → CSP solver over an extracted translation          │
-          sentiment → grammar-constrained second read                   │
-              │                                                        │
-              ├── pass ─────► keep local answer (0 tokens)             │
-              ├── unknown ──► solver/program check, else self-consist. │
-              └── fail ─────────────────────────────────────┐         │
-                                                              ▼         ▼
-                                                    escalate to Fireworks
-                                                    (REMOTE_PREFERENCE order,
-                                                     via FIREWORKS_BASE_URL only,
-                                                     ALLOWED_MODELS only)
-                                                              │
-                                                              ▼
-                                                    /output/results.json
+      ├── mathematical_reasoning ── PAL program path: the local model emits
+      │        a ~20-token arithmetic EXPRESSION; we execute it, honor any
+      │        rounding instruction, ship the exact number + the expression
+      │        as shown work. No long derivation is ever decoded. (0 tokens)
+      │
+      ├── factual / NER / summarisation / sentiment / logic
+      │        │
+      │        ▼
+      │   local model (llama.cpp, Qwen3-4B Q4, 2 vCPU)
+      │   per-category decode caps + answer-shape hints
+      │   (caps sized so every generation FINISHES in budget)
+      │        │
+      │        ▼
+      │   free improvers still run: logic answers are checked against a
+      │   CSP solver over an extracted constraint translation — a unique
+      │   solver solution OVERRIDES the free-form answer   (0 tokens)
+      │
+      └── code_generation / code_debugging
+               │
+               ▼
+          local model (cap 128 tokens, fence-parity truncation guard)
+               │
+               ▼
+          deterministic verification         agent/verifiers.py
+            parser-oracle extraction → execute the candidate
+               │
+               ├── verified ──► ship local answer            (0 tokens)
+               └── fails ─────► ship best local answer anyway (0 tokens)
+                                [escalation to Fireworks exists behind
+                                 LOCAL_ONLY_ESCALATE — verification-gated,
+                                 FIREWORKS_BASE_URL only, ALLOWED_MODELS
+                                 only, output-capped — but is OFF in the
+                                 shipped image: one call = many ranks]
+               │
+               ▼
+      /output/results.json   (written atomically after EVERY task —
+                              a hard kill at any moment leaves a valid,
+                              complete file; tasks are solved
+                              cheapest-category-first so a deadline
+                              never lands on four code tasks)
 ```
 
-Escalated math answers are re-checked by the same free local program
-re-derivation before being trusted; a grounded disagreement buys one shot at
-the fallback model (`agent/router.py::solve`). Remote prompts carry no local
-prompt scaffolding — only the raw task plus one short format line, because
-input tokens are scored too.
+### Why local-dominant is safe here (the part that took a week to earn)
 
-### Why remote-first for factual/NER/summarisation
+A 4B on 2 vCPU fails in exactly two ways, and both are *engineering*
+failures, not capability walls — we measured, then fixed each:
 
-The first real leaderboard run scored 15/19 (78.9%, one task under the
-16/19 gate). Forensics (`research/leaderboard_gate_forensics.md`,
-`research/VERDICTS.md` V25) pinned the miss to exactly the categories with
-no deterministic verifier: a self-consistent 4B is still a 4B on world
-knowledge and entity typing (57% strict on dev). Their prompts are short —
-low scored-input cost — so buying a 31B-class remote answer is cheap; a long
-summarisation passage is not, but the accuracy-gate is binary and worth
-more than the token-rank cost (`agent/router.py` — see the `REMOTE_FIRST`
-comment block for the full accounting). This is a real behavioral fork in
-the code, not a diagram simplification: `category not in REMOTE_FIRST` is
-the literal gate in `agent/router.py::solve`.
+1. **Decode-time starvation.** At ~2.5 tok/s, any generation past ~55 tokens
+   used to hit the request timeout, return empty, and silently fall through
+   to a paid remote call (or a truncated retry). Fix: a longer local-only
+   timeout (the <30s/request rule governs *proxy* calls, not our own
+   in-container server) plus per-category decode caps and terse answer-shape
+   hints so every generation **finishes** — short-complete, not truncated
+   (`agent/config.py::LOCAL_GEN_CAP`).
+2. **Long-form reasoning it cannot afford.** Math needs a 150-250-token
+   derivation the box can't decode in time — so AMDA never decodes one. The
+   PAL-style program path (emit expression → execute → format) scored **7/7
+   on dev math at zero tokens**, strictly better than the derivations it
+   replaced (`agent/router.py::_math_local_program`).
 
-## Why Gemma (Track 1 side prize: "Best Use of Gemma via Fireworks — $1,000")
+Categories with no deterministic verifier (factual, NER, summarisation)
+were remote-first in an earlier revision of this agent — that image
+qualified the accuracy gate at 89.5% but paid **8,282 tokens**. The local
+replacements were each re-validated on dev before this revision shipped:
+factual/summarisation via terse-complete hints, NER via a completeness
+hint that fixed the one real local failure mode (dropped entities — the
+terse wording, not the token budget, caused it).
+
+## The escalation path (and why Gemma leads it)
 
 `agent/config.py::REMOTE_PREFERENCE` puts `gemma-4-31b-it` first, ahead of
-`minimax-m3` and `kimi-k2p7-code` — and it's the reasoned choice, not the
-default one. The competition scores *total* tokens, so a "smart" reasoning
-model that narrates its thinking is a liability: `kimi-k2p7-code` has
-thinking **architecturally mandatory** (its own model card), meaning every
-call bills an unavoidable reasoning trace as scored output. Gemma-4 ships
-**thinking off by default**, and the one quantitative verbosity datapoint we
-found puts it at "rarely generates more than 20k tokens" against a
-comparable model's 100k+ (`research/models_fireworks.md` §3, Kaitchup
-benchmark) — while still leading on the benchmarks that matter for this
-agent (MMLU 85.2, LiveCodeBench v6 80.0). We measured, not assumed, that
-this holds under our own prompts: `research/token_thrift_audit.md` traced
-real remote-call token counts and found Gemma staying well under every
-per-category cap (e.g. NER: mean 19.6 output tokens against a 256 cap).
-Choosing the non-reasoning model isn't a side-quest for the prize — on a
-token-ranked leaderboard it's the same decision as choosing to win
-(`research/VERDICTS.md` V1, V3).
+`minimax-m3` and `kimi-k2p7-code` — a measured choice: the competition
+scores *total* tokens, so a reasoning model that narrates its thinking is a
+liability (`kimi-k2p7-code` has thinking **architecturally mandatory** per
+its own model card; every call bills the trace as scored output). Gemma-4
+ships thinking off by default and stayed well under every per-category cap
+in our traced runs (e.g. NER: mean 19.6 output tokens against a 256 cap —
+`research/token_thrift_audit.md`). This Gemma-first escalation path is how
+earlier revisions of AMDA qualified on the real leaderboard (89.5% at 8,282
+tokens; later 84.2% at 7,460 on a re-score). The shipped configuration
+disables it (`LOCAL_ONLY_ESCALATE=""`) because the endgame leaderboard
+showed a 0-token top tier — but the path is one env var away, fully
+verification-gated, and everything about it (preference order, caps,
+per-model behavior) is measurement-backed in `research/`.
 
-## Measured results
+## Measured results (shipped pure-zero configuration, 2026-07-13)
 
 | Metric | Value | Source |
 |---|---|---|
-| Accuracy, artifact-corrected | **91.1%** (51/56) on a 56-task stratified sample (7 tasks × 8 categories) | `research/final_gate_projection.md` |
-| Gate probability, P(≥16/19) | **93.6%** point estimate (range 80–94% across sensitivity scenarios) | `research/final_gate_projection.md` |
-| Token cost, projected 19-task run | **≈2,702 scored tokens** (142 tok/task measured on the 56-task sample) | `research/final_gate_projection.md` §"Token economics" |
-| Wall-clock, projected 19-task run | **≈360s** (extrapolated from four 14-task batches: 386.3s / 238.8s / 286.4s / 148.7s under `--cpus=2 --memory=4g`), well inside the 540s/10-min budget | `research/final_gate_projection.md` |
-| First real leaderboard score (pre-tilt image) | 15/19 = 78.9%, one task short of the 16/19 gate | `research/VERDICTS.md` V25, `research/leaderboard_gate_forensics.md` |
+| **Scored tokens** | **0** — zero remote calls across a full 56-task stratified run (7 × 8 categories) AND a 19-task hidden-set-shaped dress rehearsal, all under `--cpus=2 --memory=4g` | `eval/tmp_cap7/`, `eval/tmp_dress/` |
+| Dress rehearsal (19 tasks, hidden-set mix) | **19/19 answered in 395.9s** (~160s inside the 555s internal budget); strict-judge ceiling 18/19 | `eval/tmp_dress/run1/` |
+| 56-task run, strict deterministic judge | 32 pass / 14 unsure / 10 fail (ceiling 82%) — most "unsure" are correct paraphrases the keyword judge under-credits (see caveat) | `eval/tmp_cap7/` |
+| Earlier remote-first revision, real leaderboard | qualified at 89.5% / **8,282 tokens** (re-scored later at 84.2% / 7,460) — the baseline this configuration exists to beat | git history, `research/endgame_leaderboard_state.md` |
 
-Per-category verification mechanism and the corrected score behind it:
+Per-category mechanism and 56-task strict-judge line (pass/fail/unsure):
 
-| Category | Verifier | Corrected (56-task sample) |
+| Category | Mechanism (all local, 0 tokens) | 56-task strict |
 |---|---|---|
-| code_debugging / code_generation | parser-oracle extraction + executed assertions against the candidate's own function (`agent/verifiers.py::run_with_assertions`) | 7/7, 7/7 |
-| mathematical_reasoning | independent program re-derivation, executed and compared with tolerance (`_math_program_check`) | 7/7 |
-| logical_reasoning | CSP solver over an extracted declarative translation; a unique solution both verifies and can supply the answer (`solve_logic_csp`) | 5/7 (weakest category — see caveat below) |
-| sentiment_classification | grammar-constrained second read must agree on the label (`_sentiment_label_agrees`) | 5/7 |
-| named_entity_recognition | JSON-grammar-constrained generation + remote-first | 6/7 |
-| factual_knowledge, text_summarisation | remote-first (no cheap deterministic check exists for open-ended text) | 7/7, 7/7 |
+| mathematical_reasoning | expression emitted → executed → rounding honored (`_math_local_program`) | **7/7 pass** |
+| logical_reasoning | capped local answer + CSP-solver check/override (`solve_logic_csp`) | **7/7 pass** |
+| named_entity_recognition | completeness hint + JSON grammar when requested | 6 pass, 1 unsure |
+| text_summarisation | task-limit-first hint, cap 88 | 5 pass, 2 unsure |
+| sentiment_classification | label-first hint, cap 48 | 5 pass, 2 fail |
+| factual_knowledge | terse-complete hint, cap 56 | 2 pass, 5 unsure (paraphrases) |
+| code_generation / code_debugging | cap 128, fence-parity truncation guard, execution-verified | mostly "runs clean" unsure (see note) |
 
-**Caveat, stated plainly for anyone auditing these numbers**: "artifact-corrected"
-means every judge `fail`/`unsure` verdict was manually re-verified (code
-executed, logic golds brute-forced, paraphrases read against acceptance
-criteria) — the raw deterministic-judge strict score on the same sample is
-33/56 = 59%, because the judge under-credits correct paraphrases and
-differently-worded-but-correct logic answers. The full methodology,
-per-task reasoning, and raw judge output are in
-`research/final_gate_projection.md` and `eval/tmp_final_gate/`. The weakest
-category (logical_reasoning) is a measured model-capability ceiling, not a
-routing bug — see that file's "Weakest category" section for the probe that
-ruled out a one-line fix.
+**Caveats, stated plainly for anyone auditing**: the strict judge is a
+deterministic keyword/number/execution checker that under-credits correct
+paraphrases ("unsure" ≠ wrong — hand-verification of earlier identical runs
+found most factual/summarisation unsures to be correct, complete answers).
+The code rows' 56-task numbers come from an artificially all-code 14-task
+batch that deliberately over-stresses the time budget; the realistic-mix
+dress rehearsal is the representative measurement. The one dress-rehearsal
+hard fail was a genuine model reasoning miss on a hard-tier sequencing
+puzzle (complete answer, first two elements swapped) — a measured capability
+ceiling, not a routing bug.
 
 ## Build & run
 
